@@ -1,0 +1,171 @@
+# Assay lab: a small service, its dependencies and the observability stack around it.
+# Every published port is bound to 127.0.0.1 so nothing in the lab is reachable from
+# the network. Credentials below are lab-only defaults, not secrets.
+
+name: assay-lab
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # --- System under test ---------------------------------------------------------
+  app:
+    build: ./app
+    environment:
+      DATABASE_URL: postgresql://shop:shop@postgres:5432/shop
+      REDIS_URL: redis://redis:6379/0
+      DB_POOL_SIZE: "5"
+      CACHE_FAILURE_MODE: fail
+    ports:
+      - "127.0.0.1:8000:8000"
+    mem_limit: 256m
+    cpus: 1.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    logging: *default-logging
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    mem_limit: 128m
+    restart: unless-stopped
+    logging: *default-logging
+
+  load:
+    build: ./load
+    environment:
+      TARGET_URL: http://app:8000
+      RPS: "20"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  # --- Observability -------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:3.7.9
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Only lets read-only container API calls through, so Alloy never gets the raw socket.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    environment:
+      CONTAINERS: "1"
+      EVENTS: "1"
+      INFO: "1"
+      POST: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    logging: *default-logging
+
+  alloy:
+    image: grafana/alloy:v1.20.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "127.0.0.1:12345:12345"
+    depends_on:
+      - loki
+      - socket-proxy
+    restart: unless-stopped
+    logging: *default-logging
+
+  # cAdvisor needs host mounts to read container resource usage. It is part of the
+  # lab only; Assay itself never gets this level of access.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=10s
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:13.0.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  loki-data:
+  alloy-data:
+  grafana-data:

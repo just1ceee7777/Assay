@@ -1,0 +1,39 @@
+// Ship stdout/stderr of every lab container to Loki.
+// Docker is reached only through the read-only socket proxy.
+
+discovery.docker "lab" {
+  host = "tcp://socket-proxy:2375"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=assay-lab"]
+  }
+}
+
+discovery.relabel "lab" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "lab" {
+  host           = "tcp://socket-proxy:2375"
+  targets        = discovery.docker.lab.targets
+  relabel_rules  = discovery.relabel.lab.rules
+  forward_to     = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

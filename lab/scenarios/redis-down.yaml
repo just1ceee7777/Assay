@@ -1,0 +1,27 @@
+# Scenario: the cache dependency becomes unavailable.
+# The ground truth below is read only by the lab and the evaluation code,
+# never by Assay itself.
+
+id: redis-down
+title: Redis becomes unavailable
+description: >
+  Redis is stopped while the shop runs under steady load. With CACHE_FAILURE_MODE=fail,
+  item reads return 503 until Redis is started again.
+
+warmup_seconds: 120
+fault:
+  action: stop_service
+  service: redis
+duration_seconds: 180
+recovery:
+  action: start_service
+  service: redis
+cooldown_seconds: 120
+
+ground_truth:
+  root_cause_type: dependency_unavailable
+  component: redis
+  expected_symptoms:
+    - rise of HTTP 503 on /items/{item_id}
+    - redis connection errors in app logs
+  fix: start redis
