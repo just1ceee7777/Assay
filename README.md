@@ -4,9 +4,8 @@ Assay helps you find out why a self-hosted service broke. It reads the metrics, 
 container events you already collect and tells you which explanation the data supports,
 which it contradicts, and what is still missing to be sure.
 
-> **Status: early development.** Investigation is not implemented yet. What works today
-> is the `assay doctor` command and a lab environment where you can break a demo service
-> on purpose and watch it happen in Prometheus, Loki and Grafana.
+> **Status: early development.** `assay investigate` works on the lab's `redis-down`
+> scenario. Other scenarios, fix verification and the optional LLM layer are not there yet.
 
 ## What Assay will and will not do
 
@@ -75,6 +74,31 @@ and the matching log lines in Grafana's Explore view with Loki:
 
 Each run writes a record with the time of every phase to `lab/runs/`.
 
+## Investigate
+
+When more than 5% of requests fail, the lab's Prometheus fires the `ShopHighErrorRate`
+alert. Point Assay at it, during the incident or after it has resolved:
+
+```bash
+uv run assay investigate --alert ShopHighErrorRate
+```
+
+Assay takes the latest firing episode of the alert as the incident window, runs its
+checks against Prometheus and Loki and ranks the possible causes by what the checks
+found. The report goes to `reports/` as Markdown and JSON. Every finding links to the
+evidence behind it, including the exact query; checks that had no data to work with are
+listed under "Missing data" instead of counting for or against a cause. If any claim in
+the report lacks evidence, the report is not written and the command exits with code 2.
+
+A cause in the report is *supported*, not *confirmed*: confirming it takes a fix whose
+effect is verified, which Assay does not do yet.
+
+To investigate a time range without an alert:
+
+```bash
+uv run assay investigate --from 2026-10-25T12:00:00Z --to 2026-10-25T12:10:00Z
+```
+
 | Scenario | What happens |
 | --- | --- |
 | `redis-down` | Redis is stopped for 3 minutes, item reads fail with HTTP 503 |
@@ -84,6 +108,7 @@ Each run writes a record with the time of every phase to `lab/runs/`.
 | Command | What it does |
 | --- | --- |
 | `assay doctor` | Checks that Prometheus and Loki answer and that the shop is being scraped |
+| `assay investigate` | Investigates an alert or a time range and writes a report |
 | `assay --version` | Prints the version |
 
 Run them with `uv run assay ...` from the repository folder.
