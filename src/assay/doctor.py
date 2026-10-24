@@ -6,12 +6,12 @@ Every check only sends GET requests. Nothing here changes the observed system.
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 
-DEFAULT_TIMEOUT = 5.0
+from assay.http import DEFAULT_TIMEOUT, NETWORK_ERRORS
+from assay.http import get as _get
+
 MAX_REASON = 120
 
 
@@ -22,23 +22,11 @@ class CheckResult:
     detail: str
 
 
-def _get(url: str, timeout: float) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            status: int = response.status
-            body: bytes = response.read()
-            return status, body
-    except urllib.error.HTTPError as exc:
-        # The server answered, just not with 2xx: report its status, not "unreachable".
-        return exc.code, exc.read()
-
-
 def check_ready(name: str, url: str, timeout: float = DEFAULT_TIMEOUT) -> CheckResult:
     """A service is ready when its readiness endpoint answers HTTP 200."""
     try:
         status, body = _get(url, timeout)
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+    except NETWORK_ERRORS as exc:
         return CheckResult(name, False, f"unreachable: {exc}")
     if status != 200:
         # The body says why, e.g. Loki's "Ingester not ready" during its warm-up.
@@ -55,7 +43,7 @@ def check_target_up(prometheus_url: str, job: str, timeout: float = DEFAULT_TIME
     url = f"{prometheus_url.rstrip('/')}/api/v1/query?{query}"
     try:
         status, body = _get(url, timeout)
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+    except NETWORK_ERRORS as exc:
         return CheckResult(name, False, f"unreachable: {exc}")
     if status != 200:
         return CheckResult(name, False, f"HTTP {status}")
