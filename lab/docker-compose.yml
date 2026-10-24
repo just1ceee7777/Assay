@@ -103,6 +103,8 @@ services:
       CONTAINERS: "1"
       EVENTS: "1"
       INFO: "1"
+      # discovery.docker in Alloy lists networks to build its labels.
+      NETWORKS: "1"
       POST: "0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
