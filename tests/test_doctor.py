@@ -49,10 +49,16 @@ def test_ready_ok(fake_server: tuple[str, dict[str, tuple[int, bytes]]]) -> None
 
 def test_ready_not_200(fake_server: tuple[str, dict[str, tuple[int, bytes]]]) -> None:
     url, routes = fake_server
-    routes["/ready"] = (503, b"starting")
+    routes["/ready"] = (503, b"Ingester not ready: waiting for 15s after being ready\n")
     result = check_ready("loki", f"{url}/ready")
     assert not result.ok
-    assert result.detail == "HTTP 503"
+    assert result.detail == "HTTP 503: Ingester not ready: waiting for 15s after being ready"
+
+
+def test_ready_not_200_empty_body(fake_server: tuple[str, dict[str, tuple[int, bytes]]]) -> None:
+    url, routes = fake_server
+    routes["/ready"] = (503, b"")
+    assert check_ready("loki", f"{url}/ready").detail == "HTTP 503"
 
 
 def test_ready_unreachable() -> None:

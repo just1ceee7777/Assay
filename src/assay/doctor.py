@@ -12,6 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 
 DEFAULT_TIMEOUT = 5.0
+MAX_REASON = 120
 
 
 @dataclass(frozen=True)
@@ -36,11 +37,14 @@ def _get(url: str, timeout: float) -> tuple[int, bytes]:
 def check_ready(name: str, url: str, timeout: float = DEFAULT_TIMEOUT) -> CheckResult:
     """A service is ready when its readiness endpoint answers HTTP 200."""
     try:
-        status, _ = _get(url, timeout)
+        status, body = _get(url, timeout)
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         return CheckResult(name, False, f"unreachable: {exc}")
     if status != 200:
-        return CheckResult(name, False, f"HTTP {status}")
+        # The body says why, e.g. Loki's "Ingester not ready" during its warm-up.
+        reason = body.decode("utf-8", "replace").strip().splitlines()
+        detail = f"HTTP {status}: {reason[0][:MAX_REASON]}" if reason else f"HTTP {status}"
+        return CheckResult(name, False, detail)
     return CheckResult(name, True, "ready")
 
 
