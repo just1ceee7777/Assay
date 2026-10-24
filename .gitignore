@@ -23,3 +23,6 @@ lab/runs/
 
 # Private working notes (plans, context), never published
 notes/
+
+# Investigation reports written by `assay investigate`
+reports/
