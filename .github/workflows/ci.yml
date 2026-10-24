@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv sync --locked || uv sync
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Typecheck
+        run: uv run mypy
+      - name: Test
+        run: uv run pytest
+
+  lab-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate compose file
+        run: docker compose -f lab/docker-compose.yml config -q
+      - name: Validate scenarios
+        run: |
+          pip install pyyaml
+          for f in lab/scenarios/*.yaml; do
+            python lab/scenario_runner.py "$f" --dry-run
+          done
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
