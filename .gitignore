@@ -20,3 +20,6 @@ lab/runs/
 # Editors
 .idea/
 .vscode/
+
+# Private working notes (plans, context), never published
+notes/
