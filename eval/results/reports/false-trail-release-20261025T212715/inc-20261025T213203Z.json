@@ -1,0 +1,536 @@
+{
+  "assay_version": "0.0.1",
+  "valid": true,
+  "errors": [],
+  "conclusion": "cause",
+  "incident": {
+    "id": "inc-20261025T213203Z",
+    "trigger": "alert",
+    "window_start": "2026-10-25T21:29:03+00:00",
+    "window_end": "2026-10-25T21:36:18+00:00",
+    "alert": {
+      "alertname": "ShopHighErrorRate",
+      "service": "shop",
+      "severity": "page"
+    },
+    "trigger_detail": {
+      "query": "ALERTS{alertname=\"ShopHighErrorRate\", alertstate=\"firing\"}",
+      "first_seen": "2026-10-25T21:32:03.265000+00:00",
+      "last_seen": "2026-10-25T21:35:18.265000+00:00"
+    }
+  },
+  "hypotheses": [
+    {
+      "rank": 1,
+      "id": "H1",
+      "cause_type": "dependency_unavailable",
+      "component": "redis",
+      "origin": "rule",
+      "score": 2.5,
+      "status": "supported"
+    },
+    {
+      "rank": 2,
+      "id": "H4",
+      "cause_type": "recent_change",
+      "component": "app",
+      "origin": "rule",
+      "score": 1.0,
+      "status": "supported"
+    },
+    {
+      "rank": 3,
+      "id": "H3",
+      "cause_type": "app_unavailable",
+      "component": "app",
+      "origin": "rule",
+      "score": -1.5,
+      "status": "weakened"
+    },
+    {
+      "rank": 4,
+      "id": "H2",
+      "cause_type": "dependency_unavailable",
+      "component": "postgres",
+      "origin": "rule",
+      "score": -2.5,
+      "status": "refuted"
+    }
+  ],
+  "claims": [
+    {
+      "id": "S0",
+      "text": "Most likely cause: dependency_unavailable (redis). 3 check(s) support it, 0 contradict it. Not confirmed: a cause is confirmed only by a verified fix.",
+      "relation": "supports",
+      "evidence_ids": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S1",
+      "text": "the redis container was not running from 21:31:48 to 21:34:18",
+      "relation": "supports",
+      "evidence_ids": [
+        "E1"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S2",
+      "text": "the application counted 3295 errors talking to redis, from 21:31:33",
+      "relation": "supports",
+      "evidence_ids": [
+        "E2"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S3",
+      "text": "application logs have 3257 dependency error lines for redis",
+      "relation": "supports",
+      "evidence_ids": [
+        "E3"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S4",
+      "text": "version 1.0.1+20261025T2127 of app was released at 21:29:33",
+      "relation": "supports",
+      "evidence_ids": [
+        "E10"
+      ],
+      "hypothesis_id": "H4"
+    },
+    {
+      "id": "S5",
+      "text": "Prometheus scraped app successfully during the whole window",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E7"
+      ],
+      "hypothesis_id": "H3"
+    },
+    {
+      "id": "S6",
+      "text": "the app container was running during the whole window",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E8"
+      ],
+      "hypothesis_id": "H3"
+    },
+    {
+      "id": "S7",
+      "text": "the app container restarted 1 time(s)",
+      "relation": "supports",
+      "evidence_ids": [
+        "E9"
+      ],
+      "hypothesis_id": "H3"
+    },
+    {
+      "id": "S8",
+      "text": "the postgres container was running during the whole window",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E4"
+      ],
+      "hypothesis_id": "H2"
+    },
+    {
+      "id": "S9",
+      "text": "the application counted no errors talking to postgres",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E5"
+      ],
+      "hypothesis_id": "H2"
+    },
+    {
+      "id": "S10",
+      "text": "application logs have no dependency errors for postgres",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E6"
+      ],
+      "hypothesis_id": "H2"
+    }
+  ],
+  "missing": [],
+  "checks": [
+    {
+      "id": "C1",
+      "hypothesis_id": "H1",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"redis\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "held",
+      "detail": "the redis container was not running from 21:31:48 to 21:34:18",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C2",
+      "hypothesis_id": "H1",
+      "name": "dependency_errors",
+      "description": "The application counts errors talking to the dependency",
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"redis\"}[435s]))",
+      "expected_if_true": "errors to the dependency rise in the incident window",
+      "result": "held",
+      "detail": "the application counted 3295 errors talking to redis, from 21:31:33",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C3",
+      "hypothesis_id": "H1",
+      "name": "dependency_error_logs",
+      "description": "Application logs report errors talking to the dependency",
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\" [435s]))",
+      "expected_if_true": "dependency error lines appear in the incident window",
+      "result": "held",
+      "detail": "application logs have 3257 dependency error lines for redis",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C4",
+      "hypothesis_id": "H2",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"postgres\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "failed",
+      "detail": "the postgres container was running during the whole window",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C5",
+      "hypothesis_id": "H2",
+      "name": "dependency_errors",
+      "description": "The application counts errors talking to the dependency",
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"postgres\"}[435s]))",
+      "expected_if_true": "errors to the dependency rise in the incident window",
+      "result": "failed",
+      "detail": "the application counted no errors talking to postgres",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C6",
+      "hypothesis_id": "H2",
+      "name": "dependency_error_logs",
+      "description": "Application logs report errors talking to the dependency",
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"postgres\" [435s]))",
+      "expected_if_true": "dependency error lines appear in the incident window",
+      "result": "failed",
+      "detail": "application logs have no dependency errors for postgres",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C7",
+      "hypothesis_id": "H3",
+      "name": "target_down",
+      "description": "Prometheus cannot scrape the application",
+      "query": "min(min_over_time(up{job=\"shop\"}[435s]))",
+      "expected_if_true": "the scrape target is down at some point in the window",
+      "result": "failed",
+      "detail": "Prometheus scraped app successfully during the whole window",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C8",
+      "hypothesis_id": "H3",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"app\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "failed",
+      "detail": "the app container was running during the whole window",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C9",
+      "hypothesis_id": "H3",
+      "name": "container_restarted",
+      "description": "The application container restarted",
+      "query": "changes(max(container_start_time_seconds{container_label_com_docker_compose_service=\"app\"})[435s:15s])",
+      "expected_if_true": "the container start time changes in the window",
+      "result": "held",
+      "detail": "the app container restarted 1 time(s)",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    },
+    {
+      "id": "C10",
+      "hypothesis_id": "H4",
+      "name": "change_markers",
+      "description": "A deploy or configuration change happened shortly before the incident",
+      "query": "shop_build_info",
+      "expected_if_true": "a change marker for the component precedes the alert",
+      "result": "held",
+      "detail": "version 1.0.1+20261025T2127 of app was released at 21:29:33",
+      "ran_at": "2026-10-25T21:36:23.264697+00:00"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "check_id": "C1",
+      "observation_ids": [
+        "O1"
+      ],
+      "relation": "supports",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E2",
+      "check_id": "C2",
+      "observation_ids": [
+        "O2"
+      ],
+      "relation": "supports",
+      "link_type": "correlation",
+      "strength": 1.0
+    },
+    {
+      "id": "E3",
+      "check_id": "C3",
+      "observation_ids": [
+        "O3",
+        "O4",
+        "O5",
+        "O6"
+      ],
+      "relation": "supports",
+      "link_type": "correlation",
+      "strength": 0.5
+    },
+    {
+      "id": "E4",
+      "check_id": "C4",
+      "observation_ids": [
+        "O7"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E5",
+      "check_id": "C5",
+      "observation_ids": [
+        "O8"
+      ],
+      "relation": "contradicts",
+      "link_type": "correlation",
+      "strength": 1.0
+    },
+    {
+      "id": "E6",
+      "check_id": "C6",
+      "observation_ids": [
+        "O9"
+      ],
+      "relation": "contradicts",
+      "link_type": "correlation",
+      "strength": 0.5
+    },
+    {
+      "id": "E7",
+      "check_id": "C7",
+      "observation_ids": [
+        "O10"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E8",
+      "check_id": "C8",
+      "observation_ids": [
+        "O11"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E9",
+      "check_id": "C9",
+      "observation_ids": [
+        "O12"
+      ],
+      "relation": "supports",
+      "link_type": "temporal",
+      "strength": 0.5
+    },
+    {
+      "id": "E10",
+      "check_id": "C10",
+      "observation_ids": [
+        "O13"
+      ],
+      "relation": "supports",
+      "link_type": "temporal",
+      "strength": 1.0
+    }
+  ],
+  "observations": [
+    {
+      "id": "O1",
+      "source": "prometheus",
+      "component": "redis",
+      "ts": "2026-10-25T21:31:48+00:00",
+      "kind": "container_unseen",
+      "payload": {
+        "unseen_from": "2026-10-25T21:31:48+00:00",
+        "unseen_to": "2026-10-25T21:34:18+00:00",
+        "unseen_points": 11,
+        "step_seconds": 15.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"redis\"})"
+    },
+    {
+      "id": "O2",
+      "source": "prometheus",
+      "component": "redis",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "dependency_errors",
+      "payload": {
+        "increase": 3294.9,
+        "first_seen": "2026-10-25T21:31:33+00:00",
+        "last_seen": "2026-10-25T21:34:48+00:00"
+      },
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"redis\"}[435s]))"
+    },
+    {
+      "id": "O3",
+      "source": "loki",
+      "component": "redis",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "log_count",
+      "payload": {
+        "count": 3257
+      },
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\" [435s]))"
+    },
+    {
+      "id": "O4",
+      "source": "loki",
+      "component": "redis",
+      "ts": "2026-10-25T21:31:20.036548+00:00",
+      "kind": "log_line",
+      "payload": {
+        "line": "{\"ts\": \"2026-10-25T21:31:20.036463+00:00\", \"level\": \"error\", \"logger\": \"shop\", \"msg\": \"dependency_error\", \"dependency\": \"redis\", \"error\": \"ConnectionError('Error 111 connecting to redis:6379. Connection refused.')\"}"
+      },
+      "query": "{service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\""
+    },
+    {
+      "id": "O5",
+      "source": "loki",
+      "component": "redis",
+      "ts": "2026-10-25T21:31:20.087086+00:00",
+      "kind": "log_line",
+      "payload": {
+        "line": "{\"ts\": \"2026-10-25T21:31:20.086959+00:00\", \"level\": \"error\", \"logger\": \"shop\", \"msg\": \"dependency_error\", \"dependency\": \"redis\", \"error\": \"ConnectionError('Error 111 connecting to redis:6379. Connection refused.')\"}"
+      },
+      "query": "{service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\""
+    },
+    {
+      "id": "O6",
+      "source": "loki",
+      "component": "redis",
+      "ts": "2026-10-25T21:31:21.137188+00:00",
+      "kind": "log_line",
+      "payload": {
+        "line": "{\"ts\": \"2026-10-25T21:31:21.137034+00:00\", \"level\": \"error\", \"logger\": \"shop\", \"msg\": \"dependency_error\", \"dependency\": \"redis\", \"error\": \"TimeoutError('Timeout connecting to server')\"}"
+      },
+      "query": "{service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\""
+    },
+    {
+      "id": "O7",
+      "source": "prometheus",
+      "component": "postgres",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "container_seen",
+      "payload": {
+        "max_unseen_seconds": 7.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"postgres\"})"
+    },
+    {
+      "id": "O8",
+      "source": "prometheus",
+      "component": "postgres",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "dependency_errors",
+      "payload": {
+        "increase": 0.0
+      },
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"postgres\"}[435s]))"
+    },
+    {
+      "id": "O9",
+      "source": "loki",
+      "component": "postgres",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "log_count",
+      "payload": {
+        "count": 0
+      },
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"postgres\" [435s]))"
+    },
+    {
+      "id": "O10",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "scrape_up_min",
+      "payload": {
+        "min_up": 1.0
+      },
+      "query": "min(min_over_time(up{job=\"shop\"}[435s]))"
+    },
+    {
+      "id": "O11",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "container_seen",
+      "payload": {
+        "max_unseen_seconds": 7.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"app\"})"
+    },
+    {
+      "id": "O12",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-25T21:36:18+00:00",
+      "kind": "container_starts",
+      "payload": {
+        "changes": 1.0
+      },
+      "query": "changes(max(container_start_time_seconds{container_label_com_docker_compose_service=\"app\"})[435s:15s])"
+    },
+    {
+      "id": "O13",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-25T21:29:33+00:00",
+      "kind": "release",
+      "payload": {
+        "version": "1.0.1+20261025T2127",
+        "started": "2026-10-25T21:29:33+00:00",
+        "previous": [
+          "1.0.1+20261025T2107",
+          "1.0.1+20261025T2117"
+        ]
+      },
+      "query": "shop_build_info"
+    }
+  ]
+}
