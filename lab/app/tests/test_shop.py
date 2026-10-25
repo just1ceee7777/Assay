@@ -108,6 +108,19 @@ def test_metrics_count_requests_by_route_template() -> None:
     assert "shop_http_request_duration_seconds_bucket" in body
 
 
+def test_build_info_reports_version() -> None:
+    db, cache = FakeDatabase(), FakeCache()
+    settings = Settings(
+        database_url="unused",
+        redis_url="unused",
+        db_pool_size=1,
+        cache_failure_mode="fail",
+        version="1.2.3",
+    )
+    client = TestClient(create_app(settings=settings, db=db, cache=cache))
+    assert 'shop_build_info{version="1.2.3"} 1.0' in client.get("/metrics").text
+
+
 def test_invalid_cache_mode_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CACHE_FAILURE_MODE", "sometimes")
     with pytest.raises(ValueError):
