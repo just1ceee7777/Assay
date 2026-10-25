@@ -46,13 +46,13 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["assay", "shop", "scenario_runner"]
+known-first-party = ["assay", "shop", "scenario_runner", "run_eval"]
 
 [tool.mypy]
 strict = true
-files = ["src", "lab/scenario_runner.py"]
+files = ["src", "lab/scenario_runner.py", "eval/run_eval.py"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "lab/tests", "lab/app/tests"]
-pythonpath = ["lab", "lab/app"]
+testpaths = ["tests", "lab/tests", "lab/app/tests", "eval/tests"]
+pythonpath = ["lab", "lab/app", "eval"]
 addopts = "-q"

@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f lab/docker-compose.yml
 S ?= redis-down
 
-.PHONY: help install check lint format typecheck test lab-up lab-down lab-reset lab-ps lab-logs doctor scenario scenario-plan
+.PHONY: help install check lint format typecheck test lab-up lab-down lab-reset lab-ps lab-logs doctor scenario scenario-plan eval
 
 help:
 	@echo "install        install Python dependencies (uv)"
@@ -12,6 +12,7 @@ help:
 	@echo "doctor         check that Prometheus, Loki and the shop target are up"
 	@echo "scenario S=id  run a fault scenario (default: redis-down)"
 	@echo "scenario-plan  print what a scenario will do without running it"
+	@echo "eval S=id N=10 run a scenario N times and score the investigations"
 
 install:
 	uv sync
@@ -55,3 +56,8 @@ scenario:
 
 scenario-plan:
 	uv run python lab/scenario_runner.py $(S) --dry-run
+
+N ?= 10
+
+eval:
+	uv run python eval/run_eval.py $(S) --runs $(N)
