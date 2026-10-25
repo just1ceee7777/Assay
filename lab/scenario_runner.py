@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -138,6 +139,20 @@ class ComposeExecutor:
         subprocess.run(command, check=True)
 
 
+def _exit_on_sigterm(signum: int, frame: object) -> None:
+    raise SystemExit(128 + signum)
+
+
+def install_sigterm_handler() -> None:
+    """Turn SIGTERM into SystemExit so `finally` blocks run and the fault gets undone.
+
+    By default Python dies on SIGTERM without unwinding the stack, and SIGTERM is what
+    `kill`, `docker stop`, systemd and closing a session send. SIGKILL cannot be caught;
+    after one, `make lab-up` starts whatever the fault left stopped.
+    """
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -214,6 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(describe_plan(scenario))
     if args.dry_run:
         return 0
+    install_sigterm_handler()
     run_scenario(scenario, ComposeExecutor())
     return 0
 

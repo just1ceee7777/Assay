@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,7 @@ from scenario_runner import (
     SCENARIOS_DIR,
     ScenarioError,
     Step,
+    install_sigterm_handler,
     load_scenario,
     main,
     parse_scenario,
@@ -109,3 +112,26 @@ def test_dry_run_does_not_execute(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_unknown_scenario_exit_code() -> None:
     assert main(["no-such-scenario", "--dry-run"]) == 2
+
+
+def test_sigterm_during_fault_still_recovers(tmp_path: Path) -> None:
+    scenario = parse_scenario(valid_data())
+    executor = RecordingExecutor()
+
+    def sleep(_: float) -> None:
+        # Somebody runs `kill <pid>` while the fault is active.
+        if executor.steps and executor.steps[-1].action == "stop_service":
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    previous = signal.getsignal(signal.SIGTERM)
+    install_sigterm_handler()
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            run_scenario(scenario, executor, out_dir=tmp_path, sleep=sleep, log=lambda _: None)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert exit_info.value.code == 128 + signal.SIGTERM
+    assert [s.action for s in executor.steps] == ["stop_service", "start_service"]
+    # An interrupted run is not a valid sample: it must not leave a run record.
+    assert not list(tmp_path.iterdir())
