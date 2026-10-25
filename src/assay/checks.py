@@ -47,6 +47,9 @@ class Profile:
     dependency_label: str = "dependency"
     app_logs: str = '{service="app"}'
     container_label: str = "container_label_com_docker_compose_service"
+    # A gauge labelled with the running version, e.g. shop_build_info{version="1.2.3"} 1.
+    build_info_metric: str = "shop_build_info"
+    version_label: str = "version"
 
 
 @dataclass(frozen=True)
@@ -265,11 +268,50 @@ def container_restarted(ctx: Context, app: str) -> Outcome:
     )
 
 
+# How far before the window to look, to know which version was already running.
+RELEASE_LOOKBEHIND = timedelta(minutes=10)
+
+
 def change_markers(ctx: Context, app: str) -> Outcome:
+    """A release shows up as a build_info series with a version label not seen before."""
+    p = ctx.profile
+    query = p.build_info_metric
+    since = ctx.start - RELEASE_LOOKBEHIND
+    series = ctx.metrics.query_range(query, since, ctx.end, STEP_SECONDS)
+    if not series:
+        return Outcome(
+            CheckResult.NO_DATA,
+            f"the application exports no {p.build_info_metric} metric, so releases are invisible",
+            query,
+        )
+    first_seen = {
+        s.labels.get(p.version_label, "?"): min(ts for ts, _ in s.points)
+        for s in series
+        if s.points
+    }
+    # A version whose first point is the first point of the range was already running.
+    started = sorted(
+        (ts, version) for version, ts in first_seen.items() if ctx.start <= ts <= ctx.end
+    )
+    if not started:
+        running = ", ".join(sorted(first_seen))
+        versions = {"versions": sorted(first_seen)}
+        finding = Finding("prometheus", app, ctx.end, "no_release", versions, query)
+        return Outcome(
+            CheckResult.FAILED,
+            f"no new version of {app} was released in the window (running: {running})",
+            query,
+            [finding],
+        )
+    ts, version = started[-1]
+    previous = sorted(v for v, seen in first_seen.items() if seen < ts and v != version)
+    payload = {"version": version, "started": ts.isoformat(), "previous": previous}
+    finding = Finding("prometheus", app, ts, "release", payload, query)
     return Outcome(
-        CheckResult.NO_DATA,
-        "no source of change markers (deploys, config changes) is configured",
-        "",
+        CheckResult.HELD,
+        f"version {version} of {app} was released at {_fmt(ts)}",
+        query,
+        [finding],
     )
 
 

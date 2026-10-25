@@ -69,3 +69,23 @@ def test_summary() -> None:
     s = summarize(rows)
     assert s["top1"] == 0.5 and s["top3"] == 1.0 and s["claims_with_evidence"] == 0.75
     assert s["mean_investigation_seconds"] == 2.0
+
+
+def test_distractor_tracked() -> None:
+    record = {
+        **RECORD,
+        "ground_truth": {
+            **RECORD["ground_truth"],
+            "distractors": [{"root_cause_type": "recent_change", "component": "app"}],
+        },
+    }
+    rep = report(
+        "2026-10-25T12:02:40+00:00",
+        ("dependency_unavailable", "redis"),
+        ("recent_change", "app"),
+    )
+    row = score_run(record, rep)
+    assert row["distractors"] == [
+        {"cause": ["recent_change", "app"], "rank": 2, "status": "supported", "score": None}
+    ]
+    assert not row["distractor_won"]
