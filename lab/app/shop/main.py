@@ -7,6 +7,7 @@ Configuration (environment variables):
   CACHE_FAILURE_MODE  "fail": requests that need the cache return 503 when Redis is down;
                       "degrade": fall back to PostgreSQL (default "fail")
   LOG_LEVEL           default INFO
+  APP_VERSION         reported as shop_build_info{version=...} (default "dev")
 
 Fault behaviour is controlled from outside (stopping containers, network faults) or by
 the flags above, never by code paths that know which scenario is running.
@@ -26,7 +27,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from shop.logging_setup import setup_logging
 
@@ -45,6 +46,8 @@ DEPENDENCY_ERRORS = Counter(
     "shop_dependency_errors_total", "Errors talking to dependencies", ["dependency"]
 )
 CACHE_LOOKUPS = Counter("shop_cache_lookups_total", "Cache lookups", ["result"])
+# Constant 1, labelled with the running version: a new label value marks a release.
+BUILD_INFO = Gauge("shop_build_info", "Version of the running shop", ["version"])
 
 ITEM_COUNT = 100
 CACHE_TTL_SECONDS = 30
@@ -75,6 +78,7 @@ class Settings:
     redis_url: str
     db_pool_size: int
     cache_failure_mode: str
+    version: str = "dev"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -88,6 +92,7 @@ class Settings:
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             db_pool_size=int(os.environ.get("DB_POOL_SIZE", "5")),
             cache_failure_mode=mode,
+            version=os.environ.get("APP_VERSION", "dev"),
         )
 
 
@@ -210,11 +215,15 @@ def create_app(
         if cache is None:
             app.state.cache = RedisCache.connect(settings.redis_url)
             owned.append(app.state.cache)
-        log.info("startup", extra={"cache_failure_mode": settings.cache_failure_mode})
+        log.info(
+            "startup",
+            extra={"cache_failure_mode": settings.cache_failure_mode, "version": settings.version},
+        )
         yield
         for resource in owned:
             await resource.close()
 
+    BUILD_INFO.labels(settings.version).set(1)
     app = FastAPI(title="shop", lifespan=lifespan)
     app.state.db = db
     app.state.cache = cache

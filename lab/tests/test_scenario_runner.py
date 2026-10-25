@@ -135,3 +135,44 @@ def test_sigterm_during_fault_still_recovers(tmp_path: Path) -> None:
     assert [s.action for s in executor.steps] == ["stop_service", "start_service"]
     # An interrupted run is not a valid sample: it must not leave a run record.
     assert not list(tmp_path.iterdir())
+
+
+def test_events_run_during_warmup_with_unique_version(tmp_path: Path) -> None:
+    data = valid_data()
+    data["warmup_seconds"] = 10
+    data["events"] = [
+        {"after_seconds": 4, "action": "deploy_service", "service": "app", "version": "1.0.1"}
+    ]
+    scenario = parse_scenario(data)
+    executor = RecordingExecutor()
+    slept: list[float] = []
+    ticks = iter(f"2026-10-25T00:00:0{i}+00:00" for i in range(10))
+
+    path = run_scenario(
+        scenario,
+        executor,
+        out_dir=tmp_path,
+        sleep=slept.append,
+        clock=lambda: next(ticks),
+        log=lambda _: None,
+    )
+
+    assert [s.action for s in executor.steps] == ["deploy_service", "stop_service", "start_service"]
+    assert executor.steps[0].version == "1.0.1+20261025T0000"
+    assert slept == [4, 6, 2, 3]  # event at 4s, rest of warm-up, fault, cool-down
+    events = [e["event"] for e in json.loads(path.read_text())["events"]]
+    assert events[1] == "event:deploy_service app version 1.0.1+20261025T0000"
+
+
+def test_deploy_needs_version() -> None:
+    data = valid_data()
+    data["events"] = [{"after_seconds": 0, "action": "deploy_service", "service": "app"}]
+    with pytest.raises(ScenarioError, match="needs a version"):
+        parse_scenario(data)
+
+
+def test_event_after_warmup_rejected() -> None:
+    data = valid_data()
+    data["events"] = [{"after_seconds": 99, "action": "restart_service", "service": "app"}]
+    with pytest.raises(ScenarioError, match="after the warm-up"):
+        parse_scenario(data)

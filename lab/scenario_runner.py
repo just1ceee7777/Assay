@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,13 +31,15 @@ SCENARIOS_DIR = LAB_DIR / "scenarios"
 RUNS_DIR = LAB_DIR / "runs"
 COMPOSE_FILE = LAB_DIR / "docker-compose.yml"
 
-# Scenario action -> docker compose subcommand. Extend here, not in scenario files.
-ACTIONS: dict[str, str] = {
-    "stop_service": "stop",
-    "start_service": "start",
-    "restart_service": "restart",
-    "pause_service": "pause",
-    "unpause_service": "unpause",
+# Scenario action -> docker compose arguments. Extend here, not in scenario files.
+ACTIONS: dict[str, list[str]] = {
+    "stop_service": ["stop"],
+    "start_service": ["start"],
+    "restart_service": ["restart"],
+    "pause_service": ["pause"],
+    "unpause_service": ["unpause"],
+    # A release: recreate the container with a new APP_VERSION, leaving dependencies alone.
+    "deploy_service": ["up", "-d", "--no-deps", "--force-recreate"],
 }
 
 
@@ -48,9 +51,19 @@ class ScenarioError(ValueError):
 class Step:
     action: str
     service: str
+    version: str | None = None
 
     def describe(self) -> str:
-        return f"{self.action} {self.service}"
+        suffix = f" version {self.version}" if self.version else ""
+        return f"{self.action} {self.service}{suffix}"
+
+
+@dataclass(frozen=True)
+class TimedStep:
+    """A step during warm-up that is not the fault, e.g. an unrelated release."""
+
+    after_seconds: float
+    step: Step
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,7 @@ class Scenario:
     recovery: Step
     cooldown_seconds: float
     ground_truth: dict[str, Any] = field(default_factory=dict)
+    events: tuple[TimedStep, ...] = ()
 
 
 def _require(data: dict[str, Any], key: str, kind: type | tuple[type, ...]) -> Any:
@@ -74,12 +88,33 @@ def _require(data: dict[str, Any], key: str, kind: type | tuple[type, ...]) -> A
     return value
 
 
-def _step(data: dict[str, Any], key: str) -> Step:
-    raw = _require(data, key, dict)
+def _parse_step(raw: dict[str, Any], where: str) -> Step:
     action = _require(raw, "action", str)
     if action not in ACTIONS:
-        raise ScenarioError(f"{key}.action {action!r} is not one of {sorted(ACTIONS)}")
-    return Step(action=action, service=_require(raw, "service", str))
+        raise ScenarioError(f"{where}.action {action!r} is not one of {sorted(ACTIONS)}")
+    version = raw.get("version")
+    if action == "deploy_service" and not isinstance(version, str):
+        raise ScenarioError(f"{where}: deploy_service needs a version")
+    return Step(action=action, service=_require(raw, "service", str), version=version)
+
+
+def _step(data: dict[str, Any], key: str) -> Step:
+    return _parse_step(_require(data, key, dict), key)
+
+
+def _events(data: dict[str, Any], warmup: float) -> tuple[TimedStep, ...]:
+    raw = data.get("events", [])
+    if not isinstance(raw, list):
+        raise ScenarioError("events must be a list")
+    events = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ScenarioError(f"events[{i}] must be a mapping")
+        after = _seconds(item, "after_seconds")
+        if after > warmup:
+            raise ScenarioError(f"events[{i}] happens after the warm-up ends")
+        events.append(TimedStep(after, _parse_step(item, f"events[{i}]")))
+    return tuple(sorted(events, key=lambda e: e.after_seconds))
 
 
 def _seconds(data: dict[str, Any], key: str) -> float:
@@ -95,15 +130,17 @@ def parse_scenario(data: Any) -> Scenario:
     ground_truth = _require(data, "ground_truth", dict)
     for key in ("root_cause_type", "component"):
         _require(ground_truth, key, str)
+    warmup = _seconds(data, "warmup_seconds")
     return Scenario(
         id=_require(data, "id", str),
         title=_require(data, "title", str),
-        warmup_seconds=_seconds(data, "warmup_seconds"),
+        warmup_seconds=warmup,
         fault=_step(data, "fault"),
         duration_seconds=_seconds(data, "duration_seconds"),
         recovery=_step(data, "recovery"),
         cooldown_seconds=_seconds(data, "cooldown_seconds"),
         ground_truth=ground_truth,
+        events=_events(data, warmup),
     )
 
 
@@ -128,15 +165,12 @@ class ComposeExecutor:
         self.compose_file = compose_file
 
     def run(self, step: Step) -> None:
-        command = [
-            "docker",
-            "compose",
-            "-f",
-            str(self.compose_file),
-            ACTIONS[step.action],
-            step.service,
-        ]
-        subprocess.run(command, check=True)
+        command = ["docker", "compose", "-f", str(self.compose_file), *ACTIONS[step.action]]
+        env = None
+        if step.version:
+            # docker-compose.yml passes APP_VERSION into the service's environment.
+            env = {**os.environ, "APP_VERSION": step.version}
+        subprocess.run([*command, step.service], check=True, env=env)
 
 
 def _exit_on_sigterm(signum: int, frame: object) -> None:
@@ -173,7 +207,18 @@ def run_scenario(
         log(f"[{events[-1]['at']}] {event}")
 
     mark("warmup_started")
-    sleep(scenario.warmup_seconds)
+    stamp = events[0]["at"].replace(":", "").replace("-", "")[:13]
+    elapsed = 0.0
+    for event in scenario.events:
+        sleep(event.after_seconds - elapsed)
+        elapsed = event.after_seconds
+        step = event.step
+        if step.version:
+            # Every run must ship a version that was never running before.
+            step = replace(step, version=f"{step.version}+{stamp}")
+        executor.run(step)
+        mark(f"event:{step.describe()}")
+    sleep(scenario.warmup_seconds - elapsed)
 
     mark("fault_injected")
     try:
@@ -194,6 +239,7 @@ def run_scenario(
         "scenario": scenario.id,
         "fault": asdict(scenario.fault),
         "recovery": asdict(scenario.recovery),
+        "events_planned": [asdict(e) for e in scenario.events],
         "ground_truth": scenario.ground_truth,
         "events": events,
     }
@@ -203,10 +249,13 @@ def run_scenario(
 
 
 def describe_plan(scenario: Scenario) -> str:
+    during = "".join(
+        f"\n     at {e.after_seconds:g}s: {e.step.describe()}" for e in scenario.events
+    )
     return "\n".join(
         [
             f"scenario: {scenario.id} - {scenario.title}",
-            f"  1. warm up for {scenario.warmup_seconds:g}s",
+            f"  1. warm up for {scenario.warmup_seconds:g}s{during}",
             f"  2. {scenario.fault.describe()}, keep for {scenario.duration_seconds:g}s",
             f"  3. {scenario.recovery.describe()}",
             f"  4. cool down for {scenario.cooldown_seconds:g}s",
