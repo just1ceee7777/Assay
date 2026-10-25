@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from assay.checks import STEP_SECONDS, Context, Profile, container_not_running, dependency_errors
+from assay.checks import (
+    RELEASE_LOOKBEHIND,
+    STEP_SECONDS,
+    Context,
+    Profile,
+    change_markers,
+    container_not_running,
+    dependency_errors,
+)
 from assay.domain import CheckResult, HypothesisStatus, Incident, Relation, Trigger
 from assay.investigate import investigate
 from assay.report import Claim, build_report, to_markdown, validate
@@ -105,7 +113,7 @@ def test_redis_down_ranks_redis_first_and_report_is_valid() -> None:
     assert report.valid, report.errors
     assert report.conclusion == "cause"
     assert all(claim.evidence_ids for claim in report.claims)
-    assert "change markers" in report.missing[0]
+    assert "releases are invisible" in report.missing[0]
     assert "dependency_unavailable (redis)" in to_markdown(report)
 
 
@@ -152,3 +160,38 @@ def test_missing_metric_is_no_data_not_zero() -> None:
     metrics.instant["count(last_over_time(shop_dependency_errors_total"] = None
     ctx = Context(metrics, logs, Profile(), START, END)
     assert dependency_errors(ctx, "postgres").result is CheckResult.NO_DATA
+
+
+def _build_info(*versions: tuple[str, datetime, datetime]) -> list[Series]:
+    out = []
+    for version, first, last in versions:
+        points, ts = [], first
+        while ts <= last:
+            points.append((ts, 1.0))
+            ts += timedelta(seconds=STEP_SECONDS)
+        out.append(Series({"version": version}, points))
+    return out
+
+
+def test_release_inside_window_is_found() -> None:
+    metrics, logs = redis_down_lab()
+    release = START + timedelta(minutes=1)
+    metrics.ranges["shop_build_info"] = _build_info(
+        ("1.0.0", START - RELEASE_LOOKBEHIND, release - timedelta(seconds=15)),
+        ("1.0.1", release, END),
+    )
+    outcome = change_markers(Context(metrics, logs, Profile(), START, END), "app")
+    assert outcome.result is CheckResult.HELD
+    assert outcome.findings[0].payload == {
+        "version": "1.0.1",
+        "started": release.isoformat(),
+        "previous": ["1.0.0"],
+    }
+
+
+def test_version_running_before_window_is_not_a_release() -> None:
+    metrics, logs = redis_down_lab()
+    metrics.ranges["shop_build_info"] = _build_info(("1.0.0", START - RELEASE_LOOKBEHIND, END))
+    outcome = change_markers(Context(metrics, logs, Profile(), START, END), "app")
+    assert outcome.result is CheckResult.FAILED
+    assert "running: 1.0.0" in outcome.detail

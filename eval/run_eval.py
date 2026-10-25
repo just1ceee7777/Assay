@@ -45,6 +45,21 @@ def score_run(record: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     )
     rank = ranked.index(expected) + 1 if expected in ranked else None
     top = report["hypotheses"][0] if report["hypotheses"] else {}
+    # Control scenarios name wrong causes the data hints at; they must not win.
+    distractors = []
+    for d in truth.get("distractors", []):
+        key = (d["root_cause_type"], d["component"])
+        hyp = next(
+            (h for h in report["hypotheses"] if (h["cause_type"], h["component"]) == key), None
+        )
+        distractors.append(
+            {
+                "cause": list(key),
+                "rank": ranked.index(key) + 1 if key in ranked else None,
+                "status": hyp["status"] if hyp else None,
+                "score": hyp.get("score") if hyp else None,
+            }
+        )
     return {
         "expected": list(expected),
         "top1": list(ranked[0]) if ranked else None,
@@ -57,6 +72,8 @@ def score_run(record: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
         "claims": len(report["claims"]),
         "claims_with_evidence": sum(1 for c in report["claims"] if c["evidence_ids"]),
         "alert_in_run": alert_in_run,
+        "distractors": distractors,
+        "distractor_won": any(d["rank"] == 1 for d in distractors),
     }
 
 
@@ -72,6 +89,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         else 1.0,
         "valid_reports": sum(r["report_valid"] for r in rows),
         "alert_in_run": sum(r["alert_in_run"] for r in rows),
+        "distractor_won": sum(r.get("distractor_won", False) for r in rows),
+        "distractor_supported": sum(
+            any(d["status"] == "supported" for d in r.get("distractors", [])) for r in rows
+        ),
         "mean_investigation_seconds": round(sum(r["investigation_seconds"] for r in rows) / n, 2)
         if n
         else 0.0,
