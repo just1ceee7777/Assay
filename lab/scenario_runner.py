@@ -18,6 +18,8 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -41,6 +43,10 @@ ACTIONS: dict[str, list[str]] = {
     # A release: recreate the container with a new APP_VERSION, leaving dependencies alone.
     "deploy_service": ["up", "-d", "--no-deps", "--force-recreate"],
 }
+# Network faults go through the Toxiproxy API; `service` names the proxied link.
+NETWORK_ACTIONS = {"add_latency", "remove_latency"}
+TOXIPROXY_API = os.environ.get("TOXIPROXY_API", "http://127.0.0.1:8474")
+FAULT_TOXIC = "fault_latency"
 
 
 class ScenarioError(ValueError):
@@ -54,11 +60,13 @@ class Step:
     version: str | None = None
     # Settings shipped with a release, passed to docker compose as environment variables.
     env: dict[str, str] = field(default_factory=dict)
+    latency_ms: int | None = None
 
     def describe(self) -> str:
         suffix = f" version {self.version}" if self.version else ""
         settings = "".join(f" {k}={v}" for k, v in sorted(self.env.items()))
-        return f"{self.action} {self.service}{suffix}{settings}"
+        latency = f" {self.latency_ms}ms" if self.latency_ms else ""
+        return f"{self.action} {self.service}{suffix}{settings}{latency}"
 
 
 @dataclass(frozen=True)
@@ -95,8 +103,12 @@ def _require(data: dict[str, Any], key: str, kind: type | tuple[type, ...]) -> A
 
 def _parse_step(raw: dict[str, Any], where: str) -> Step:
     action = _require(raw, "action", str)
-    if action not in ACTIONS:
-        raise ScenarioError(f"{where}.action {action!r} is not one of {sorted(ACTIONS)}")
+    known = sorted({*ACTIONS, *NETWORK_ACTIONS})
+    if action not in known:
+        raise ScenarioError(f"{where}.action {action!r} is not one of {known}")
+    latency = raw.get("latency_ms")
+    if action == "add_latency" and (not isinstance(latency, int) or latency <= 0):
+        raise ScenarioError(f"{where}: add_latency needs a positive latency_ms")
     version = raw.get("version")
     if action == "deploy_service" and not isinstance(version, str):
         raise ScenarioError(f"{where}: deploy_service needs a version")
@@ -108,7 +120,11 @@ def _parse_step(raw: dict[str, Any], where: str) -> Step:
     if env and action != "deploy_service":
         raise ScenarioError(f"{where}: only deploy_service takes env")
     return Step(
-        action=action, service=_require(raw, "service", str), version=version, env=dict(env)
+        action=action,
+        service=_require(raw, "service", str),
+        version=version,
+        env=dict(env),
+        latency_ms=latency if action == "add_latency" else None,
     )
 
 
@@ -180,6 +196,9 @@ class ComposeExecutor:
         self.compose_file = compose_file
 
     def run(self, step: Step) -> None:
+        if step.action in NETWORK_ACTIONS:
+            self._network(step)
+            return
         command = ["docker", "compose", "-f", str(self.compose_file), *ACTIONS[step.action]]
         env = None
         if step.version or step.env:
@@ -188,6 +207,30 @@ class ComposeExecutor:
             if step.version:
                 env["APP_VERSION"] = step.version
         subprocess.run([*command, step.service], check=True, env=env)
+
+    def _network(self, step: Step) -> None:
+        base = f"{TOXIPROXY_API}/proxies/{step.service}/toxics"
+        if step.action == "add_latency":
+            body = {
+                "name": FAULT_TOXIC,
+                "type": "latency",
+                "stream": "downstream",
+                "attributes": {"latency": step.latency_ms, "jitter": 0},
+            }
+            request = urllib.request.Request(
+                base,
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        else:
+            request = urllib.request.Request(f"{base}/{FAULT_TOXIC}", method="DELETE")
+        try:
+            urllib.request.urlopen(request, timeout=5).close()  # noqa: S310
+        except urllib.error.HTTPError as exc:
+            # Removing a fault that is already gone is fine; anything else is not.
+            if not (step.action == "remove_latency" and exc.code == 404):
+                raise
 
 
 def _exit_on_sigterm(signum: int, frame: object) -> None:

@@ -34,7 +34,25 @@
     },
     {
       "rank": 2,
+      "id": "H3",
+      "cause_type": "dependency_slow",
+      "component": "redis",
+      "origin": "rule",
+      "score": 0,
+      "status": "open"
+    },
+    {
+      "rank": 3,
       "id": "H4",
+      "cause_type": "dependency_slow",
+      "component": "postgres",
+      "origin": "rule",
+      "score": 0,
+      "status": "open"
+    },
+    {
+      "rank": 4,
+      "id": "H6",
       "cause_type": "recent_change",
       "component": "app",
       "origin": "rule",
@@ -42,7 +60,7 @@
       "status": "open"
     },
     {
-      "rank": 3,
+      "rank": 5,
       "id": "H2",
       "cause_type": "dependency_unavailable",
       "component": "postgres",
@@ -51,8 +69,8 @@
       "status": "refuted"
     },
     {
-      "rank": 4,
-      "id": "H3",
+      "rank": 6,
+      "id": "H5",
       "cause_type": "app_unavailable",
       "component": "app",
       "origin": "rule",
@@ -133,7 +151,7 @@
       "evidence_ids": [
         "E7"
       ],
-      "hypothesis_id": "H3"
+      "hypothesis_id": "H5"
     },
     {
       "id": "S8",
@@ -142,7 +160,7 @@
       "evidence_ids": [
         "E8"
       ],
-      "hypothesis_id": "H3"
+      "hypothesis_id": "H5"
     },
     {
       "id": "S9",
@@ -151,10 +169,12 @@
       "evidence_ids": [
         "E9"
       ],
-      "hypothesis_id": "H3"
+      "hypothesis_id": "H5"
     }
   ],
   "missing": [
+    "no call durations for postgres around the symptoms",
+    "no call durations for redis around the symptoms",
     "no release of app before the symptoms to time",
     "the application exports no shop_build_info metric, so releases are invisible"
   ],
@@ -228,6 +248,28 @@
     {
       "id": "C7",
       "hypothesis_id": "H3",
+      "name": "dependency_latency",
+      "description": "Calls to the dependency take much longer than usual",
+      "query": "histogram_quantile(0.95, sum by (le) (rate(shop_dependency_duration_seconds_bucket{dependency=\"redis\"}[285s])))",
+      "expected_if_true": "call p95 is at least 3x its usual value (median per-minute p95 over the 30 min before)",
+      "result": "no_data",
+      "detail": "no call durations for redis around the symptoms",
+      "ran_at": "2026-10-25T18:37:03.385316+00:00"
+    },
+    {
+      "id": "C8",
+      "hypothesis_id": "H4",
+      "name": "dependency_latency",
+      "description": "Calls to the dependency take much longer than usual",
+      "query": "histogram_quantile(0.95, sum by (le) (rate(shop_dependency_duration_seconds_bucket{dependency=\"postgres\"}[285s])))",
+      "expected_if_true": "call p95 is at least 3x its usual value (median per-minute p95 over the 30 min before)",
+      "result": "no_data",
+      "detail": "no call durations for postgres around the symptoms",
+      "ran_at": "2026-10-25T18:37:03.385316+00:00"
+    },
+    {
+      "id": "C9",
+      "hypothesis_id": "H5",
       "name": "target_down",
       "description": "Prometheus cannot scrape the application",
       "query": "min(avg_over_time(up{job=\"shop\"}[285s]))",
@@ -237,8 +279,8 @@
       "ran_at": "2026-10-25T18:37:03.385316+00:00"
     },
     {
-      "id": "C8",
-      "hypothesis_id": "H3",
+      "id": "C10",
+      "hypothesis_id": "H5",
       "name": "container_not_running",
       "description": "The container is not running",
       "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"app\"})",
@@ -248,8 +290,8 @@
       "ran_at": "2026-10-25T18:37:03.385316+00:00"
     },
     {
-      "id": "C9",
-      "hypothesis_id": "H3",
+      "id": "C11",
+      "hypothesis_id": "H5",
       "name": "container_restarted",
       "description": "The application container restarted",
       "query": "max(container_start_time_seconds{container_label_com_docker_compose_service=\"app\"})",
@@ -259,8 +301,8 @@
       "ran_at": "2026-10-25T18:37:03.385316+00:00"
     },
     {
-      "id": "C10",
-      "hypothesis_id": "H4",
+      "id": "C12",
+      "hypothesis_id": "H6",
       "name": "change_markers",
       "description": "A deploy or configuration change happened shortly before the incident",
       "query": "shop_build_info",
@@ -270,8 +312,8 @@
       "ran_at": "2026-10-25T18:37:03.385316+00:00"
     },
     {
-      "id": "C11",
-      "hypothesis_id": "H4",
+      "id": "C13",
+      "hypothesis_id": "H6",
       "name": "release_effect_immediate",
       "description": "The symptoms start right after the release",
       "query": "shop_build_info",
@@ -347,7 +389,7 @@
     },
     {
       "id": "E7",
-      "check_id": "C7",
+      "check_id": "C9",
       "observation_ids": [
         "O10"
       ],
@@ -357,7 +399,7 @@
     },
     {
       "id": "E8",
-      "check_id": "C8",
+      "check_id": "C10",
       "observation_ids": [
         "O11"
       ],
@@ -367,7 +409,7 @@
     },
     {
       "id": "E9",
-      "check_id": "C9",
+      "check_id": "C11",
       "observation_ids": [
         "O12"
       ],

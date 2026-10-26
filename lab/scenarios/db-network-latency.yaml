@@ -1,0 +1,36 @@
+# Scenario: the network between the shop and PostgreSQL gets slow.
+# The ground truth below is read only by the lab and the evaluation code,
+# never by Assay itself.
+
+id: db-network-latency
+title: The link to PostgreSQL adds 100 ms to every round trip
+description: >
+  Toxiproxy adds 100 ms to every response from PostgreSQL. Nothing is released and
+  nothing fails; item pages go from ~10 ms to ~350 ms at p95. From the outside this looks
+  like bad-release: the difference is that each query got slower, not that there are
+  more queries. 100 ms rather than more: at 300 ms the 5-connection pool runs out and the
+  incident turns into pool exhaustion, a different scenario.
+
+alert: ShopSlowItemPages
+warmup_seconds: 120
+fault:
+  action: add_latency
+  service: postgres
+  latency_ms: 100
+duration_seconds: 180
+recovery:
+  action: remove_latency
+  service: postgres
+cooldown_seconds: 120
+
+ground_truth:
+  root_cause_type: dependency_slow
+  component: postgres
+  expected_symptoms:
+    - item page p95 latency rises from ~10 ms to ~350 ms
+    - PostgreSQL call p95 rises from ~10 ms to ~250 ms
+    - no HTTP errors, no release
+  fix: remove the network latency
+  distractors:
+    - root_cause_type: recent_change
+      component: app

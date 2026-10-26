@@ -11,6 +11,7 @@ from assay.checks import (
     container_not_running,
     container_restarted,
     dependency_errors,
+    dependency_latency,
     release_effect_immediate,
     target_down,
 )
@@ -115,7 +116,7 @@ def test_redis_down_ranks_redis_first_and_report_is_valid() -> None:
     assert report.valid, report.errors
     assert report.conclusion == "cause"
     assert all(claim.evidence_ids for claim in report.claims)
-    assert "releases are invisible" in report.missing[0]
+    assert any("releases are invisible" in item for item in report.missing)
     assert "dependency_unavailable (redis)" in to_markdown(report)
 
 
@@ -301,3 +302,59 @@ def test_restart_without_release_holds() -> None:
     outcome = container_restarted(_focus_ctx(metrics, logs), "app")
     assert outcome.result is CheckResult.HELD
     assert "1 time(s) without a release" in outcome.detail
+
+
+class LatencyMetrics(FakeMetrics):
+    """p95 call duration: one value before the focus period, another during it."""
+
+    def __init__(
+        self,
+        before: float | None,
+        during: float | None,
+        focus_start: datetime,
+        history_minutes: int = 30,
+    ) -> None:
+        super().__init__()
+        self.before, self.during, self.focus_start = before, during, focus_start
+        self.history_minutes = history_minutes
+
+    def query(self, expr: str, at: datetime) -> list[Sample]:
+        if expr.startswith("count_over_time"):
+            return [Sample({}, at, self.history_minutes)]
+        value = self.before if at <= self.focus_start else self.during
+        return [] if value is None else [Sample({}, at, value)]
+
+
+def _latency_ctx(before: float | None, during: float | None, history: int = 30) -> Context:
+    symptoms = START + timedelta(minutes=2)
+    metrics = LatencyMetrics(before, during, symptoms - timedelta(seconds=60), history)
+    return Context(metrics, FakeLogs({}), Profile(), START, END, symptoms, END)
+
+
+def test_dependency_much_slower_holds() -> None:
+    outcome = dependency_latency(_latency_ctx(0.010, 0.250), "postgres")
+    assert outcome.result is CheckResult.HELD
+    assert outcome.findings[0].payload == {
+        "p95_ms": 250.0,
+        "baseline_p95_ms": 10.0,
+        "baseline_window": "median of per-minute p95 over 30 min",
+    }
+    assert outcome.findings[1].query.startswith("quantile_over_time(0.5,")
+
+
+def test_short_history_is_no_data() -> None:
+    outcome = dependency_latency(_latency_ctx(0.010, 0.250, history=9), "postgres")
+    assert outcome.result is CheckResult.NO_DATA
+    assert "9 of 15 minutes" in outcome.detail
+
+
+def test_tiny_slowdown_is_noise() -> None:
+    # 3x slower, but only by 1 ms: Redis at 0.5 ms -> 1.5 ms.
+    outcome = dependency_latency(_latency_ctx(0.0005, 0.0015), "redis")
+    assert outcome.result is CheckResult.FAILED
+
+
+def test_no_calls_is_no_data() -> None:
+    assert dependency_latency(_latency_ctx(None, 0.2), "postgres").result is CheckResult.NO_DATA
+    nan = float("nan")
+    assert dependency_latency(_latency_ctx(0.01, nan), "postgres").result is CheckResult.NO_DATA

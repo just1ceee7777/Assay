@@ -23,8 +23,8 @@ import logging
 import os
 import random
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -49,6 +49,12 @@ DEPENDENCY_ERRORS = Counter(
     "shop_dependency_errors_total", "Errors talking to dependencies", ["dependency"]
 )
 CACHE_LOOKUPS = Counter("shop_cache_lookups_total", "Cache lookups", ["result"])
+DEPENDENCY_LATENCY = Histogram(
+    "shop_dependency_duration_seconds",
+    "Duration of calls to dependencies, failed calls included",
+    ["dependency"],
+    buckets=(0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+)
 # Constant 1, labelled with the running version: a new label value marks a release.
 BUILD_INFO = Gauge("shop_build_info", "Version of the running shop", ["version"])
 
@@ -63,6 +69,18 @@ class DependencyError(Exception):
         super().__init__(f"{dependency}: {cause}")
         self.dependency = dependency
         self.cause = cause
+
+
+@contextmanager
+def dependency_call(name: str) -> Iterator[None]:
+    """Time a call to a dependency and turn its failures into DependencyError."""
+    start = time.perf_counter()
+    try:
+        yield
+    except Exception as exc:
+        raise DependencyError(name, exc) from exc
+    finally:
+        DEPENDENCY_LATENCY.labels(name).observe(time.perf_counter() - start)
 
 
 class Database(Protocol):
@@ -144,40 +162,32 @@ class PostgresDatabase:
             )
 
     async def fetch_item(self, item_id: int) -> dict[str, Any] | None:
-        try:
+        with dependency_call("postgres"):
             row = await self._pool.fetchrow(
                 "SELECT id, name, price_cents FROM items WHERE id = $1", item_id
             )
-        except Exception as exc:
-            raise DependencyError("postgres", exc) from exc
         return dict(row) if row else None
 
     async def fetch_items(self, item_ids: list[int]) -> list[dict[str, Any]]:
-        try:
+        with dependency_call("postgres"):
             rows = await self._pool.fetch(
                 "SELECT id, name, price_cents FROM items WHERE id = ANY($1::int[]) ORDER BY id",
                 item_ids,
             )
-        except Exception as exc:
-            raise DependencyError("postgres", exc) from exc
         return [dict(row) for row in rows]
 
     async def create_order(self, item_id: int, quantity: int) -> int:
-        try:
+        with dependency_call("postgres"):
             order_id: int = await self._pool.fetchval(
                 "INSERT INTO orders (item_id, quantity) VALUES ($1, $2) RETURNING id",
                 item_id,
                 quantity,
             )
-        except Exception as exc:
-            raise DependencyError("postgres", exc) from exc
         return order_id
 
     async def ping(self) -> None:
-        try:
+        with dependency_call("postgres"):
             await self._pool.fetchval("SELECT 1")
-        except Exception as exc:
-            raise DependencyError("postgres", exc) from exc
 
     async def close(self) -> None:
         await self._pool.close()
@@ -195,23 +205,17 @@ class RedisCache:
         return cls(client)
 
     async def get(self, key: str) -> str | None:
-        try:
+        with dependency_call("redis"):
             value = await self._client.get(key)
-        except Exception as exc:
-            raise DependencyError("redis", exc) from exc
         return value.decode() if value is not None else None
 
     async def set(self, key: str, value: str, ttl: int) -> None:
-        try:
+        with dependency_call("redis"):
             await self._client.set(key, value, ex=ttl)
-        except Exception as exc:
-            raise DependencyError("redis", exc) from exc
 
     async def ping(self) -> None:
-        try:
+        with dependency_call("redis"):
             await self._client.ping()
-        except Exception as exc:
-            raise DependencyError("redis", exc) from exc
 
     async def close(self) -> None:
         await self._client.aclose()

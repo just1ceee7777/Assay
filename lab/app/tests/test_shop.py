@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from shop.main import DependencyError, Settings, create_app
+from shop.main import DEPENDENCY_LATENCY, DependencyError, Settings, create_app, dependency_call
 
 
 class FakeDatabase:
@@ -161,3 +161,21 @@ def test_invalid_cache_mode_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CACHE_FAILURE_MODE", "sometimes")
     with pytest.raises(ValueError):
         Settings.from_env()
+
+
+def _calls(name: str) -> float:
+    for metric in DEPENDENCY_LATENCY.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_count") and sample.labels == {"dependency": name}:
+                return sample.value
+    return 0.0
+
+
+def test_dependency_call_times_success_and_failure() -> None:
+    before = _calls("testdep")
+    with dependency_call("testdep"):
+        pass
+    with pytest.raises(DependencyError) as info, dependency_call("testdep"):
+        raise ConnectionError("refused")
+    assert info.value.dependency == "testdep"
+    assert _calls("testdep") == before + 2

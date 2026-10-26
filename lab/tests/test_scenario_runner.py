@@ -198,3 +198,12 @@ def test_env_only_for_releases() -> None:
     data["fault"]["env"] = {"X": "1"}
     with pytest.raises(ScenarioError, match="only deploy_service takes env"):
         parse_scenario(data)
+
+
+def test_network_latency_needs_positive_latency() -> None:
+    data = valid_data()
+    data["fault"] = {"action": "add_latency", "service": "postgres"}
+    with pytest.raises(ScenarioError, match="positive latency_ms"):
+        parse_scenario(data)
+    data["fault"]["latency_ms"] = 100
+    assert parse_scenario(data).fault.latency_ms == 100
