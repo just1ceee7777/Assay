@@ -15,6 +15,8 @@ from assay.sources import Prometheus
 # Points further apart than this belong to separate firing episodes.
 EPISODE_GAP = timedelta(seconds=60)
 MAX_POINTS = 10_000
+# Longer than any sensible `for:` duration of an alerting rule.
+PENDING_LOOKBACK = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -24,10 +26,30 @@ class FiringInterval:
     first_seen: datetime
     last_seen: datetime
     query: str
+    # When the rule's condition first held, before its `for:` delay made it fire.
+    # This is the onset of the symptoms as the alert defines them.
+    pending_since: datetime | None = None
+
+    @property
+    def symptoms_since(self) -> datetime:
+        return self.pending_since or self.first_seen
 
 
-def alert_query(alertname: str) -> str:
-    return f'ALERTS{{alertname="{alertname}", alertstate="firing"}}'
+def alert_query(alertname: str, state: str = "firing") -> str:
+    return f'ALERTS{{alertname="{alertname}", alertstate="{state}"}}'
+
+
+def _episode_start(points: list[datetime], end: datetime) -> datetime | None:
+    """Start of the run of points that ends at or just before `end`."""
+    before = sorted(ts for ts in points if ts <= end)
+    if not before or end - before[-1] > EPISODE_GAP:
+        return None
+    first = before[-1]
+    for ts in reversed(before[:-1]):
+        if first - ts > EPISODE_GAP:
+            break
+        first = ts
+    return first
 
 
 def last_firing(
@@ -43,10 +65,12 @@ def last_firing(
         return None
 
     last_ts, labels = points[-1]
-    first_ts = last_ts
-    for ts, _ in reversed(points[:-1]):
-        if first_ts - ts > EPISODE_GAP:
-            break
-        first_ts = ts
+    first_ts = _episode_start([ts for ts, _ in points], last_ts) or last_ts
     clean = {k: v for k, v in labels.items() if k not in {"__name__", "alertstate"}}
-    return FiringInterval(alertname, clean, first_ts, last_ts, query)
+
+    pending = prometheus.query_range(
+        alert_query(alertname, "pending"), first_ts - PENDING_LOOKBACK, first_ts, step
+    )
+    pending_points = [ts for s in pending for ts, value in s.points if value == 1]
+    pending_since = _episode_start(pending_points, first_ts)
+    return FiringInterval(alertname, clean, first_ts, last_ts, query, pending_since)

@@ -38,6 +38,10 @@ def whole_seconds(moment: datetime) -> datetime:
     return moment.replace(microsecond=0)
 
 
+def _whole(moment: datetime | None) -> datetime | None:
+    return whole_seconds(moment) if moment else None
+
+
 def investigate(
     incident: Incident,
     metrics: MetricSource,
@@ -52,6 +56,8 @@ def investigate(
         profile,
         whole_seconds(incident.window_start),
         whole_seconds(incident.window_end),
+        _whole(incident.symptoms_start),
+        _whole(incident.symptoms_end),
     )
     result = Investigation(incident)
     counters = {"H": 0, "C": 0, "E": 0, "O": 0}

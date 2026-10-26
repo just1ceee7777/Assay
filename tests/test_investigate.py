@@ -10,6 +10,7 @@ from assay.checks import (
     change_markers,
     container_not_running,
     dependency_errors,
+    release_effect_immediate,
 )
 from assay.domain import CheckResult, HypothesisStatus, Incident, Relation, Trigger
 from assay.investigate import investigate
@@ -195,3 +196,53 @@ def test_version_running_before_window_is_not_a_release() -> None:
     outcome = change_markers(Context(metrics, logs, Profile(), START, END), "app")
     assert outcome.result is CheckResult.FAILED
     assert "running: 1.0.0" in outcome.detail
+
+
+def _with_release(release: datetime) -> tuple[FakeMetrics, FakeLogs]:
+    metrics, logs = redis_down_lab()
+    metrics.ranges["shop_build_info"] = _build_info(
+        ("1.0.0", START - RELEASE_LOOKBEHIND, release - timedelta(seconds=15)),
+        ("1.0.1", release, END),
+    )
+    return metrics, logs
+
+
+def test_release_right_before_symptoms_holds() -> None:
+    symptoms = START + timedelta(minutes=3)
+    metrics, logs = _with_release(symptoms - timedelta(seconds=30))
+    ctx = Context(metrics, logs, Profile(), START, END, symptoms, END)
+    outcome = release_effect_immediate(ctx, "app")
+    assert outcome.result is CheckResult.HELD
+    assert outcome.findings[0].payload["gap_seconds"] == 30
+
+
+def test_release_that_ran_cleanly_first_fails() -> None:
+    symptoms = START + timedelta(minutes=3)
+    metrics, logs = _with_release(symptoms - timedelta(minutes=2))
+    ctx = Context(metrics, logs, Profile(), START, END, symptoms, END)
+    outcome = release_effect_immediate(ctx, "app")
+    assert outcome.result is CheckResult.FAILED
+    assert "ran for 120 s without symptoms" in outcome.detail
+
+
+def test_release_timing_needs_symptom_start() -> None:
+    metrics, logs = _with_release(START + timedelta(minutes=1))
+    ctx = Context(metrics, logs, Profile(), START, END)
+    assert release_effect_immediate(ctx, "app").result is CheckResult.NO_DATA
+
+
+def test_release_after_symptoms_is_not_a_candidate() -> None:
+    symptoms = START + timedelta(minutes=2)
+    metrics, logs = _with_release(symptoms + timedelta(minutes=1))
+    ctx = Context(metrics, logs, Profile(), START, END, symptoms, END)
+    assert change_markers(ctx, "app").result is CheckResult.FAILED
+
+
+def test_focus_is_symptoms_plus_lead() -> None:
+    metrics, logs = redis_down_lab()
+    symptoms = START + timedelta(minutes=3)
+    ctx = Context(metrics, logs, Profile(), START, END, symptoms, END - timedelta(minutes=1))
+    assert ctx.focus_start == symptoms - timedelta(seconds=60)
+    assert ctx.focus_end == END - timedelta(minutes=1)
+    assert ctx.focus_range == "180s"  # from minute 2 (3 min - 60 s lead) to minute 5
+    assert Context(metrics, logs, Profile(), START, END).focus_start == START

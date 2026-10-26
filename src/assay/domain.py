@@ -54,6 +54,10 @@ class Incident:
     alert: dict[str, str] = field(default_factory=dict)
     # The query and the firing interval that produced the window, when there was an alert.
     trigger_detail: dict[str, Any] = field(default_factory=dict)
+    # When the symptoms were present, if known (from the alert). A cause has to be
+    # present then or just before; the wider window only gives context.
+    symptoms_start: datetime | None = None
+    symptoms_end: datetime | None = None
 
 
 @dataclass
