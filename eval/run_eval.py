@@ -2,6 +2,10 @@
 
 Usage:
   python eval/run_eval.py redis-down --runs 10
+  python eval/run_eval.py redis-down --replay   # re-investigate recorded runs, no new runs
+
+Replay works while Prometheus and Loki still hold the data of the recorded runs (7 days in
+the lab). It answers "how would the current code have done on the same incidents".
 
 Evaluation is kept apart from the product: it never imports `assay`. It runs the CLI the
 way a user would and reads its JSON report. The ground truth comes from the scenario run
@@ -26,6 +30,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "eval" / "results"
+LAB_RUNS = ROOT / "lab" / "runs"
 RECORD_LINE = re.compile(r"run record written to (\S+)")
 
 
@@ -103,35 +108,19 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
 
 
-def run_once(scenario: str, alert: str, out_dir: Path) -> dict[str, Any]:
-    started = datetime.now(tz=UTC)
-    lab = _run(["uv", "run", "python", "lab/scenario_runner.py", scenario])
-    match = RECORD_LINE.search(lab.stdout)
-    if lab.returncode != 0 or not match:
-        raise RuntimeError(f"scenario failed:\n{lab.stdout}\n{lab.stderr}")
-    record_path = Path(match.group(1))
+def investigate_run(
+    record_path: Path, alert: str, out_dir: Path, until: datetime | None = None
+) -> dict[str, Any]:
     record = json.loads(record_path.read_text(encoding="utf-8"))
-
     report_dir = out_dir / record_path.stem
+    cmd = ["uv", "run", "assay", "investigate", "--alert", alert, "--lookback", "15m"]
+    if until:
+        cmd += ["--until", until.isoformat()]
     t0 = time.monotonic()
-    inv = _run(
-        [
-            "uv",
-            "run",
-            "assay",
-            "investigate",
-            "--alert",
-            alert,
-            "--lookback",
-            "15m",
-            "--out",
-            str(report_dir),
-        ]
-    )
+    inv = _run([*cmd, "--out", str(report_dir)])
     elapsed = time.monotonic() - t0
     row: dict[str, Any] = {
         "run": record_path.stem,
-        "started": started.isoformat(),
         "investigate_exit": inv.returncode,
         "investigation_seconds": round(elapsed, 2),
         "llm": "off",
@@ -153,15 +142,51 @@ def run_once(scenario: str, alert: str, out_dir: Path) -> dict[str, Any]:
     return row
 
 
+def run_once(scenario: str, alert: str, out_dir: Path) -> dict[str, Any]:
+    started = datetime.now(tz=UTC)
+    lab = _run(["uv", "run", "python", "lab/scenario_runner.py", scenario])
+    match = RECORD_LINE.search(lab.stdout)
+    if lab.returncode != 0 or not match:
+        raise RuntimeError(f"scenario failed:\n{lab.stdout}\n{lab.stderr}")
+    return {"started": started.isoformat(), **investigate_run(Path(match.group(1)), alert, out_dir)}
+
+
+def replay(scenario: str, alert: str, out_dir: Path) -> list[dict[str, Any]]:
+    """Re-investigate the runs listed in the scenario's results, as of the end of each run."""
+    results = RESULTS_DIR / f"{scenario}.jsonl"
+    runs = [json.loads(line)["run"] for line in results.read_text(encoding="utf-8").splitlines()]
+    rows = []
+    for run in runs:
+        record_path = LAB_RUNS / f"{run}.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        end = next(e["at"] for e in record["events"] if e["event"] == "cooldown_finished")
+        rows.append(investigate_run(record_path, alert, out_dir, datetime.fromisoformat(end)))
+    return rows
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("scenario")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--alert", default="ShopHighErrorRate")
     parser.add_argument("--pause", type=float, default=60.0, help="seconds between runs")
+    parser.add_argument(
+        "--replay", action="store_true", help="re-investigate recorded runs instead of new ones"
+    )
     args = parser.parse_args(argv)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    if args.replay:
+        replayed = replay(args.scenario, args.alert, RESULTS_DIR / "replay")
+        (RESULTS_DIR / f"{args.scenario}-replay.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in replayed), encoding="utf-8"
+        )
+        summary = summarize(replayed)
+        print(json.dumps(summary, indent=2))
+        (RESULTS_DIR / f"{args.scenario}-replay-summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
+        return 0
     results = RESULTS_DIR / f"{args.scenario}.jsonl"
     out_dir = RESULTS_DIR / "reports"
     rows: list[dict[str, Any]] = []

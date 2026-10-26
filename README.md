@@ -93,6 +93,12 @@ the report lacks evidence, the report is not written and the command exits with 
 A cause in the report is *supported*, not *confirmed*: confirming it takes a fix whose
 effect is verified, which Assay does not do yet.
 
+To investigate an earlier episode of the alert, give the time to look back from:
+
+```bash
+uv run assay investigate --alert ShopHighErrorRate --until 2026-10-25T21:00:00Z
+```
+
 To investigate a time range without an alert:
 
 ```bash

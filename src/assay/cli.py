@@ -49,22 +49,32 @@ def _incident(args: argparse.Namespace, prometheus: Prometheus, now: datetime) -
         firing = last_firing(prometheus, args.alert, now, args.lookback)
         if firing is None:
             return None
-        start = whole_seconds(firing.first_seen - args.before)
+        start = whole_seconds(firing.symptoms_since - args.before)
         end = whole_seconds(min(now, firing.last_seen + args.after))
         detail = {
             "query": firing.query,
             "first_seen": firing.first_seen.isoformat(),
             "last_seen": firing.last_seen.isoformat(),
+            "pending_since": firing.pending_since.isoformat() if firing.pending_since else None,
         }
         incident_id = f"inc-{firing.first_seen:%Y%m%dT%H%M%SZ}"
-        return Incident(incident_id, Trigger.ALERT, start, end, firing.labels, detail)
+        return Incident(
+            incident_id,
+            Trigger.ALERT,
+            start,
+            end,
+            firing.labels,
+            detail,
+            symptoms_start=whole_seconds(firing.symptoms_since),
+            symptoms_end=whole_seconds(firing.last_seen),
+        )
     start, end = whole_seconds(args.start), whole_seconds(args.end)
     return Incident(f"inc-{start:%Y%m%dT%H%M%SZ}", Trigger.MANUAL, start, end)
 
 
 def _investigate(args: argparse.Namespace) -> int:
     prometheus, loki = Prometheus(args.prometheus), Loki(args.loki)
-    now = datetime.now(tz=UTC)
+    now = min(args.until, datetime.now(tz=UTC)) if args.until else datetime.now(tz=UTC)
     try:
         incident = _incident(args, prometheus, now)
     except SourceError as exc:
@@ -109,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--from", dest="start", type=_moment, help="window start (ISO 8601)")
     inv.add_argument("--to", dest="end", type=_moment, help="window end, with --from")
     inv.add_argument("--lookback", type=_duration, default=timedelta(hours=6))
+    inv.add_argument(
+        "--until", type=_moment, help="with --alert: take the latest episode before this time"
+    )
     inv.add_argument(
         "--before",
         type=_duration,

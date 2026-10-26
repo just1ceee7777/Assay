@@ -8,7 +8,7 @@ from conftest import Routes
 
 from assay.alerts import last_firing
 from assay.http import SourceError
-from assay.sources import Loki, Prometheus
+from assay.sources import Loki, Prometheus, Series
 
 T0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 
@@ -79,3 +79,31 @@ def test_last_firing_none(fake_server: tuple[str, Routes]) -> None:
     url, routes = fake_server
     routes["/api/v1/query_range"] = (200, _matrix())
     assert last_firing(Prometheus(url), "X", T0, timedelta(hours=1)) is None
+
+
+class StatefulAlerts:
+    """ALERTS history: pending for 30 s, then firing for two minutes."""
+
+    def __init__(self, pending: list[datetime], firing: list[datetime]) -> None:
+        self.by_state = {"pending": pending, "firing": firing}
+
+    def query_range(self, expr: str, start: datetime, end: datetime, step: float) -> list[Series]:
+        state = "pending" if 'alertstate="pending"' in expr else "firing"
+        points = [(ts, 1.0) for ts in self.by_state[state] if start <= ts <= end]
+        labels = {"alertname": "X", "alertstate": state}
+        return [Series(labels, points)] if points else []
+
+
+def test_last_firing_finds_symptom_onset_from_pending() -> None:
+    pending = [T0 + timedelta(seconds=s) for s in range(0, 30, 5)]
+    firing = [T0 + timedelta(seconds=s) for s in range(30, 150, 5)]
+    interval = last_firing(
+        StatefulAlerts(pending, firing),  # type: ignore[arg-type]
+        "X",
+        T0 + timedelta(minutes=5),
+        timedelta(hours=1),
+    )
+    assert interval is not None
+    assert interval.first_seen == T0 + timedelta(seconds=30)
+    assert interval.pending_since == T0
+    assert interval.symptoms_since == T0
