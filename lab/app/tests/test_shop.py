@@ -10,13 +10,23 @@ from shop.main import DependencyError, Settings, create_app
 
 class FakeDatabase:
     def __init__(self) -> None:
-        self.items = {1: {"id": 1, "name": "item-1", "price_cents": 107}}
+        self.items = {
+            i: {"id": i, "name": f"item-{i}", "price_cents": 100 + i} for i in range(1, 101)
+        }
         self.orders = 0
         self.down = False
+        self.queries = 0
+
+    async def fetch_items(self, item_ids: list[int]) -> list[dict[str, Any]]:
+        if self.down:
+            raise DependencyError("postgres", ConnectionError("refused"))
+        self.queries += 1
+        return [self.items[i] for i in sorted(item_ids) if i in self.items]
 
     async def fetch_item(self, item_id: int) -> dict[str, Any] | None:
         if self.down:
             raise DependencyError("postgres", ConnectionError("refused"))
+        self.queries += 1
         return self.items.get(item_id)
 
     async def create_order(self, item_id: int, quantity: int) -> int:
@@ -50,10 +60,16 @@ class FakeCache:
             raise DependencyError("redis", ConnectionError("refused"))
 
 
-def make_client(mode: str = "fail") -> tuple[TestClient, FakeDatabase, FakeCache]:
+def make_client(
+    mode: str = "fail", related: str = "batch"
+) -> tuple[TestClient, FakeDatabase, FakeCache]:
     db, cache = FakeDatabase(), FakeCache()
     settings = Settings(
-        database_url="unused", redis_url="unused", db_pool_size=1, cache_failure_mode=mode
+        database_url="unused",
+        redis_url="unused",
+        db_pool_size=1,
+        cache_failure_mode=mode,
+        related_items_query=related,
     )
     app = create_app(settings=settings, db=db, cache=cache)
     return TestClient(app), db, cache
@@ -65,6 +81,26 @@ def test_item_is_cached_after_first_read() -> None:
     assert response.status_code == 200
     assert response.json()["name"] == "item-1"
     assert "item:1" in cache.data
+
+
+def test_related_items_batch_is_one_query() -> None:
+    client, db, _ = make_client(related="batch")
+    body = client.get("/items/1").json()
+    assert body["related"] == list(range(2, 22))
+    assert db.queries == 2  # the item itself + one query for all related items
+
+
+def test_related_items_per_item_is_n_plus_one() -> None:
+    client, db, _ = make_client(related="per_item")
+    body = client.get("/items/1").json()
+    assert body["related"] == list(range(2, 22))
+    assert db.queries == 1 + 20
+
+
+def test_invalid_related_mode_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RELATED_ITEMS_QUERY", "lazy")
+    with pytest.raises(ValueError, match="RELATED_ITEMS_QUERY"):
+        Settings.from_env()
 
 
 def test_missing_item_is_404() -> None:

@@ -12,3 +12,16 @@ groups:
           service: shop
         annotations:
           summary: More than 5% of shop requests fail with 5xx
+
+      # Users wait: item pages are slow. Normal p95 is ~10 ms in the lab.
+      - alert: ShopSlowItemPages
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(shop_http_request_duration_seconds_bucket{route="/items/{item_id}"}[1m]))
+          ) > 0.05
+        for: 30s
+        labels:
+          severity: page
+          service: shop
+        annotations:
+          summary: 95th percentile of item page latency is above 50 ms

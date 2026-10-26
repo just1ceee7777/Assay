@@ -52,10 +52,13 @@ class Step:
     action: str
     service: str
     version: str | None = None
+    # Settings shipped with a release, passed to docker compose as environment variables.
+    env: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> str:
         suffix = f" version {self.version}" if self.version else ""
-        return f"{self.action} {self.service}{suffix}"
+        settings = "".join(f" {k}={v}" for k, v in sorted(self.env.items()))
+        return f"{self.action} {self.service}{suffix}{settings}"
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,8 @@ class Scenario:
     cooldown_seconds: float
     ground_truth: dict[str, Any] = field(default_factory=dict)
     events: tuple[TimedStep, ...] = ()
+    # The alert this scenario is expected to fire; evaluation investigates it.
+    alert: str = "ShopHighErrorRate"
 
 
 def _require(data: dict[str, Any], key: str, kind: type | tuple[type, ...]) -> Any:
@@ -95,7 +100,16 @@ def _parse_step(raw: dict[str, Any], where: str) -> Step:
     version = raw.get("version")
     if action == "deploy_service" and not isinstance(version, str):
         raise ScenarioError(f"{where}: deploy_service needs a version")
-    return Step(action=action, service=_require(raw, "service", str), version=version)
+    env = raw.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        raise ScenarioError(f"{where}.env must map names to strings")
+    if env and action != "deploy_service":
+        raise ScenarioError(f"{where}: only deploy_service takes env")
+    return Step(
+        action=action, service=_require(raw, "service", str), version=version, env=dict(env)
+    )
 
 
 def _step(data: dict[str, Any], key: str) -> Step:
@@ -141,6 +155,7 @@ def parse_scenario(data: Any) -> Scenario:
         cooldown_seconds=_seconds(data, "cooldown_seconds"),
         ground_truth=ground_truth,
         events=_events(data, warmup),
+        alert=data.get("alert", "ShopHighErrorRate"),
     )
 
 
@@ -167,9 +182,11 @@ class ComposeExecutor:
     def run(self, step: Step) -> None:
         command = ["docker", "compose", "-f", str(self.compose_file), *ACTIONS[step.action]]
         env = None
-        if step.version:
-            # docker-compose.yml passes APP_VERSION into the service's environment.
-            env = {**os.environ, "APP_VERSION": step.version}
+        if step.version or step.env:
+            # docker-compose.yml passes these into the service's environment.
+            env = {**os.environ, **step.env}
+            if step.version:
+                env["APP_VERSION"] = step.version
         subprocess.run([*command, step.service], check=True, env=env)
 
 
@@ -208,25 +225,27 @@ def run_scenario(
 
     mark("warmup_started")
     stamp = events[0]["at"].replace(":", "").replace("-", "")[:13]
+
+    def unique(step: Step) -> Step:
+        # Every run must ship versions that were never running before.
+        return replace(step, version=f"{step.version}+{stamp}") if step.version else step
+
     elapsed = 0.0
     for event in scenario.events:
         sleep(event.after_seconds - elapsed)
         elapsed = event.after_seconds
-        step = event.step
-        if step.version:
-            # Every run must ship a version that was never running before.
-            step = replace(step, version=f"{step.version}+{stamp}")
+        step = unique(event.step)
         executor.run(step)
         mark(f"event:{step.describe()}")
     sleep(scenario.warmup_seconds - elapsed)
 
     mark("fault_injected")
     try:
-        executor.run(scenario.fault)
+        executor.run(unique(scenario.fault))
         sleep(scenario.duration_seconds)
     finally:
         # Always try to recover, even if the run is interrupted mid-fault.
-        executor.run(scenario.recovery)
+        executor.run(unique(scenario.recovery))
         mark("fault_recovered")
 
     sleep(scenario.cooldown_seconds)
@@ -237,6 +256,7 @@ def run_scenario(
     path = out_dir / f"{scenario.id}-{started[:15]}.json"
     record = {
         "scenario": scenario.id,
+        "alert": scenario.alert,
         "fault": asdict(scenario.fault),
         "recovery": asdict(scenario.recovery),
         "events_planned": [asdict(e) for e in scenario.events],

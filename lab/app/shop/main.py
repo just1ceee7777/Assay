@@ -8,6 +8,9 @@ Configuration (environment variables):
                       "degrade": fall back to PostgreSQL (default "fail")
   LOG_LEVEL           default INFO
   APP_VERSION         reported as shop_build_info{version=...} (default "dev")
+  RELATED_ITEMS_QUERY how item pages load their related items: "batch" (one query) or
+                      "per_item" (one query per related item, the N+1 pattern)
+                      (default "batch")
 
 Fault behaviour is controlled from outside (stopping containers, network faults) or by
 the flags above, never by code paths that know which scenario is running.
@@ -50,6 +53,8 @@ CACHE_LOOKUPS = Counter("shop_cache_lookups_total", "Cache lookups", ["result"])
 BUILD_INFO = Gauge("shop_build_info", "Version of the running shop", ["version"])
 
 ITEM_COUNT = 100
+RELATED_COUNT = 20
+RELATED_MODES = {"batch", "per_item"}
 CACHE_TTL_SECONDS = 30
 
 
@@ -62,6 +67,7 @@ class DependencyError(Exception):
 
 class Database(Protocol):
     async def fetch_item(self, item_id: int) -> dict[str, Any] | None: ...
+    async def fetch_items(self, item_ids: list[int]) -> list[dict[str, Any]]: ...
     async def create_order(self, item_id: int, quantity: int) -> int: ...
     async def ping(self) -> None: ...
 
@@ -79,12 +85,16 @@ class Settings:
     db_pool_size: int
     cache_failure_mode: str
     version: str = "dev"
+    related_items_query: str = "batch"
 
     @classmethod
     def from_env(cls) -> Settings:
         mode = os.environ.get("CACHE_FAILURE_MODE", "fail")
         if mode not in {"fail", "degrade"}:
             raise ValueError(f"CACHE_FAILURE_MODE must be fail or degrade, got {mode!r}")
+        related = os.environ.get("RELATED_ITEMS_QUERY", "batch")
+        if related not in RELATED_MODES:
+            raise ValueError(f"RELATED_ITEMS_QUERY must be batch or per_item, got {related!r}")
         return cls(
             database_url=os.environ.get(
                 "DATABASE_URL", "postgresql://shop:shop@localhost:5432/shop"
@@ -93,6 +103,7 @@ class Settings:
             db_pool_size=int(os.environ.get("DB_POOL_SIZE", "5")),
             cache_failure_mode=mode,
             version=os.environ.get("APP_VERSION", "dev"),
+            related_items_query=related,
         )
 
 
@@ -140,6 +151,16 @@ class PostgresDatabase:
         except Exception as exc:
             raise DependencyError("postgres", exc) from exc
         return dict(row) if row else None
+
+    async def fetch_items(self, item_ids: list[int]) -> list[dict[str, Any]]:
+        try:
+            rows = await self._pool.fetch(
+                "SELECT id, name, price_cents FROM items WHERE id = ANY($1::int[]) ORDER BY id",
+                item_ids,
+            )
+        except Exception as exc:
+            raise DependencyError("postgres", exc) from exc
+        return [dict(row) for row in rows]
 
     async def create_order(self, item_id: int, quantity: int) -> int:
         try:
@@ -194,6 +215,11 @@ class RedisCache:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def related_ids(item_id: int) -> list[int]:
+    """The items shown next to `item_id`: its neighbours in the catalogue."""
+    return [(item_id + k - 1) % ITEM_COUNT + 1 for k in range(1, RELATED_COUNT + 1)]
 
 
 def create_app(
@@ -294,17 +320,23 @@ def create_app(
             CACHE_LOOKUPS.labels("hit" if cached is not None else "miss").inc()
         if cached is not None:
             item: dict[str, Any] = json.loads(cached)
-            return item
-
-        item_row = await state.db.fetch_item(item_id)
-        if item_row is None:
-            raise HTTPException(status_code=404, detail="item not found")
-        try:
-            await state.cache.set(key, json.dumps(item_row), CACHE_TTL_SECONDS)
-        except DependencyError:
-            if state.settings.cache_failure_mode == "fail":
-                raise
-        return item_row
+        else:
+            row = await state.db.fetch_item(item_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="item not found")
+            item = row
+            try:
+                await state.cache.set(key, json.dumps(item), CACHE_TTL_SECONDS)
+            except DependencyError:
+                if state.settings.cache_failure_mode == "fail":
+                    raise
+        # Related items are personalised in a real shop, so they are never cached.
+        ids = related_ids(item_id)
+        if state.settings.related_items_query == "batch":
+            related = await state.db.fetch_items(ids)
+        else:
+            related = [r for i in ids if (r := await state.db.fetch_item(i)) is not None]
+        return {**item, "related": [r["id"] for r in related]}
 
     @app.post("/orders", status_code=201)
     async def create_order(request: Request) -> dict[str, int]:

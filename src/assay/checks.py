@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from assay.domain import CheckResult, LinkType
-from assay.sources import LogLine, Sample, Series
+from assay.sources import LogLine, Sample, Series, from_unix
 
 STEP_SECONDS = 15.0
 # cAdvisor housekeeping plus scrape interval: a container unseen for longer is not running.
@@ -52,6 +52,9 @@ class Profile:
     version_label: str = "version"
 
 
+# A counter that existed recently shows the app is instrumented, so a missing series for
+# one dependency means zero errors rather than unknown.
+INSTRUMENTATION_LOOKBACK = "1h"
 # A cause may show up a little before the symptoms do (detection and rate() windows lag).
 SYMPTOM_LEAD = timedelta(seconds=60)
 
@@ -147,11 +150,14 @@ def dependency_errors(ctx: Context, dep: str) -> Outcome:
     selector = f'{p.dependency_errors_metric}{{{p.dependency_label}="{dep}"}}'
     query = f"sum(increase({selector}[{ctx.focus_range}]))"
     if not ctx.metrics.query(
-        f"count(last_over_time({p.dependency_errors_metric}[{ctx.focus_range}]))", ctx.focus_end
+        f"count(last_over_time({p.dependency_errors_metric}[{INSTRUMENTATION_LOOKBACK}]))",
+        ctx.focus_end,
     ):
         return Outcome(
             CheckResult.NO_DATA,
-            f"the application exports no {p.dependency_errors_metric} metric",
+            f"no {p.dependency_errors_metric} series in the last {INSTRUMENTATION_LOOKBACK}: "
+            "the counter appears only after a first error, so zero errors and missing "
+            "instrumentation look the same",
             query,
         )
     # prometheus_client creates a labelled series on first use, so a missing series
@@ -262,52 +268,96 @@ def _grid(start: datetime, end: datetime) -> list[datetime]:
 # --- application checks --------------------------------------------------------------
 
 
+# A cause has to explain the symptoms' duration: a few seconds of downtime cannot explain
+# minutes of slow or failing requests. A release restarts the container for a few seconds.
+MIN_DOWNTIME = timedelta(seconds=30)
+# How long after a container start its new version shows up in build_info (start + scrape).
+RELEASE_AFTER_START = timedelta(seconds=60)
+
+
 def target_down(ctx: Context, app: str) -> Outcome:
-    query = f'min(min_over_time(up{{job="{ctx.profile.job}"}}[{ctx.focus_range}]))'
+    query = f'min(avg_over_time(up{{job="{ctx.profile.job}"}}[{ctx.focus_range}]))'
     value = _value(ctx.metrics.query(query, ctx.focus_end))
     if value is None:
         return Outcome(
             CheckResult.NO_DATA, f"Prometheus has no scrape data for job {ctx.profile.job}", query
         )
-    finding = Finding("prometheus", app, ctx.focus_end, "scrape_up_min", {"min_up": value}, query)
-    if value < 1:
-        return Outcome(
-            CheckResult.HELD,
-            f"Prometheus failed to scrape {app} {ctx.focus_name}",
-            query,
-            [finding],
+    focus = (ctx.focus_end - ctx.focus_start).total_seconds()
+    down = round((1 - value) * focus)
+    payload = {"up_fraction": round(value, 3), "down_seconds": down, "focus_seconds": int(focus)}
+    finding = Finding("prometheus", app, ctx.focus_end, "scrape_up_fraction", payload, query)
+    if down >= MIN_DOWNTIME.total_seconds():
+        detail = f"Prometheus could not scrape {app} for about {down} s {ctx.focus_name}"
+        return Outcome(CheckResult.HELD, detail, query, [finding])
+    if down > 0:
+        detail = (
+            f"Prometheus could not scrape {app} for only about {down} s {ctx.focus_name}, "
+            "too short to explain the symptoms"
         )
-    return Outcome(
-        CheckResult.FAILED,
-        f"Prometheus scraped {app} successfully {ctx.focus_name}",
-        query,
-        [finding],
-    )
+    else:
+        detail = f"Prometheus scraped {app} successfully {ctx.focus_name}"
+    return Outcome(CheckResult.FAILED, detail, query, [finding])
 
 
 def container_restarted(ctx: Context, app: str) -> Outcome:
+    """Restarts that are not releases: crashes, OOM kills, manual restarts."""
     label = ctx.profile.container_label
-    query = (
-        f'changes(max(container_start_time_seconds{{{label}="{app}"}})'
-        f"[{ctx.focus_range}:{int(STEP_SECONDS)}s])"
-    )
-    value = _value(ctx.metrics.query(query, ctx.focus_end))
-    if value is None:
+    query = f'max(container_start_time_seconds{{{label}="{app}"}})'
+    series = ctx.metrics.query_range(query, ctx.focus_start, ctx.focus_end, STEP_SECONDS)
+    if not series:
         return Outcome(
             CheckResult.NO_DATA, f"cAdvisor has no start time for the {app} container", query
         )
-    finding = Finding(
-        "prometheus", app, ctx.focus_end, "container_starts", {"changes": value}, query
+    # The value is the start time itself, so its distinct values are the starts.
+    starts = sorted(
+        {from_unix(v) for s in series for _, v in s.points if from_unix(v) >= ctx.focus_start}
     )
-    if value >= 1:
+    releases = _releases(ctx)
+    shipped = sorted(releases.first_seen.items(), key=lambda item: item[1])
+
+    def release_for(start: datetime) -> str | None:
+        return next(
+            (v for v, seen in shipped if start <= seen <= start + RELEASE_AFTER_START), None
+        )
+
+    matched = {start: release_for(start) for start in starts}
+    crashes = [start for start, version in matched.items() if version is None]
+    payload: dict[str, Any] = {
+        "starts": [start.isoformat() for start in starts],
+        "releases": {start.isoformat(): v for start, v in matched.items() if v},
+    }
+    findings = [Finding("prometheus", app, ctx.focus_end, "container_starts", payload, query)]
+    if crashes:
+        when = ", ".join(_fmt(start) for start in crashes)
         return Outcome(
-            CheckResult.HELD, f"the {app} container restarted {value:.0f} time(s)", query, [finding]
+            CheckResult.HELD,
+            f"the {app} container restarted {len(crashes)} time(s) without a release ({when})",
+            query,
+            findings,
+        )
+    if starts:
+        versions = ", ".join(v for v in matched.values() if v)
+        findings.append(
+            Finding(
+                "prometheus",
+                app,
+                ctx.focus_end,
+                "releases",
+                {"versions": [v for v in matched.values() if v]},
+                releases.query,
+            )
+        )
+        return Outcome(
+            CheckResult.FAILED,
+            f"the {app} container restarted only to ship releases ({versions})",
+            query,
+            findings,
         )
     return Outcome(
         CheckResult.FAILED,
         f"the {app} container did not restart {ctx.focus_name}",
         query,
-        [finding],
+        findings,
     )
 
 
@@ -449,7 +499,7 @@ CONTAINER_NOT_RUNNING = CheckSpec(
 TARGET_DOWN = CheckSpec(
     "target_down",
     "Prometheus cannot scrape the application",
-    "the scrape target is down around the symptoms",
+    "the scrape target is down for a meaningful part of the symptoms",
     LinkType.TEMPORAL,
     1.0,
     target_down,
@@ -457,7 +507,7 @@ TARGET_DOWN = CheckSpec(
 CONTAINER_RESTARTED = CheckSpec(
     "container_restarted",
     "The application container restarted",
-    "the container start time changes around the symptoms",
+    "the container restarts around the symptoms without a release",
     LinkType.TEMPORAL,
     0.5,
     container_restarted,

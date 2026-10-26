@@ -176,3 +176,25 @@ def test_event_after_warmup_rejected() -> None:
     data["events"] = [{"after_seconds": 99, "action": "restart_service", "service": "app"}]
     with pytest.raises(ScenarioError, match="after the warm-up"):
         parse_scenario(data)
+
+
+def test_release_settings_and_alert_are_parsed() -> None:
+    data = valid_data()
+    data["alert"] = "ShopSlowItemPages"
+    data["fault"] = {
+        "action": "deploy_service",
+        "service": "app",
+        "version": "1.1.0",
+        "env": {"RELATED_ITEMS_QUERY": "per_item"},
+    }
+    scenario = parse_scenario(data)
+    assert scenario.alert == "ShopSlowItemPages"
+    assert scenario.fault.env == {"RELATED_ITEMS_QUERY": "per_item"}
+    assert "RELATED_ITEMS_QUERY=per_item" in scenario.fault.describe()
+
+
+def test_env_only_for_releases() -> None:
+    data = valid_data()
+    data["fault"]["env"] = {"X": "1"}
+    with pytest.raises(ScenarioError, match="only deploy_service takes env"):
+        parse_scenario(data)
