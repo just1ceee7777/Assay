@@ -1,0 +1,550 @@
+{
+  "assay_version": "0.0.1",
+  "valid": true,
+  "errors": [],
+  "conclusion": "cause",
+  "incident": {
+    "id": "inc-20261026T161042Z",
+    "trigger": "alert",
+    "window_start": "2026-10-26T16:07:12+00:00",
+    "window_end": "2026-10-26T16:14:57+00:00",
+    "alert": {
+      "alertname": "ShopSlowItemPages",
+      "service": "shop",
+      "severity": "page"
+    },
+    "trigger_detail": {
+      "query": "ALERTS{alertname=\"ShopSlowItemPages\", alertstate=\"firing\"}",
+      "first_seen": "2026-10-26T16:10:42.174000+00:00",
+      "last_seen": "2026-10-26T16:13:57.174000+00:00",
+      "pending_since": "2026-10-26T16:10:12.174000+00:00"
+    },
+    "symptoms_start": "2026-10-26T16:10:12+00:00",
+    "symptoms_end": "2026-10-26T16:13:57+00:00"
+  },
+  "hypotheses": [
+    {
+      "rank": 1,
+      "id": "H6",
+      "cause_type": "recent_change",
+      "component": "app",
+      "origin": "rule",
+      "score": 1.0,
+      "status": "supported"
+    },
+    {
+      "rank": 2,
+      "id": "H3",
+      "cause_type": "dependency_slow",
+      "component": "redis",
+      "origin": "rule",
+      "score": 0,
+      "status": "open"
+    },
+    {
+      "rank": 3,
+      "id": "H4",
+      "cause_type": "dependency_slow",
+      "component": "postgres",
+      "origin": "rule",
+      "score": 0,
+      "status": "open"
+    },
+    {
+      "rank": 4,
+      "id": "H1",
+      "cause_type": "dependency_unavailable",
+      "component": "redis",
+      "origin": "rule",
+      "score": -1.5,
+      "status": "refuted"
+    },
+    {
+      "rank": 5,
+      "id": "H2",
+      "cause_type": "dependency_unavailable",
+      "component": "postgres",
+      "origin": "rule",
+      "score": -1.5,
+      "status": "refuted"
+    },
+    {
+      "rank": 6,
+      "id": "H5",
+      "cause_type": "app_unavailable",
+      "component": "app",
+      "origin": "rule",
+      "score": -2.5,
+      "status": "refuted"
+    }
+  ],
+  "claims": [
+    {
+      "id": "S0",
+      "text": "Most likely cause: recent_change (app). 2 check(s) support it, 0 contradict it. Not confirmed: a cause is confirmed only by a verified fix.",
+      "relation": "supports",
+      "evidence_ids": [
+        "E8",
+        "E9"
+      ],
+      "hypothesis_id": "H6"
+    },
+    {
+      "id": "S1",
+      "text": "version 1.1.0+20261026T1607 of app was released at 16:10:12",
+      "relation": "supports",
+      "evidence_ids": [
+        "E8"
+      ],
+      "hypothesis_id": "H6"
+    },
+    {
+      "id": "S2",
+      "text": "the symptoms began 0 s after version 1.1.0+20261026T1607 of app was released",
+      "relation": "supports",
+      "evidence_ids": [
+        "E9"
+      ],
+      "hypothesis_id": "H6"
+    },
+    {
+      "id": "S3",
+      "text": "the redis container was running around the symptoms",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E1"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S4",
+      "text": "application logs have no dependency errors for redis",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E2"
+      ],
+      "hypothesis_id": "H1"
+    },
+    {
+      "id": "S5",
+      "text": "the postgres container was running around the symptoms",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E3"
+      ],
+      "hypothesis_id": "H2"
+    },
+    {
+      "id": "S6",
+      "text": "application logs have no dependency errors for postgres",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E4"
+      ],
+      "hypothesis_id": "H2"
+    },
+    {
+      "id": "S7",
+      "text": "Prometheus could not scrape app for only about 10 s around the symptoms, too short to explain the symptoms",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E5"
+      ],
+      "hypothesis_id": "H5"
+    },
+    {
+      "id": "S8",
+      "text": "the app container was running around the symptoms",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E6"
+      ],
+      "hypothesis_id": "H5"
+    },
+    {
+      "id": "S9",
+      "text": "the app container restarted only to ship releases (1.1.0+20261026T1607, 1.0.0+20261026T1607)",
+      "relation": "contradicts",
+      "evidence_ids": [
+        "E7"
+      ],
+      "hypothesis_id": "H5"
+    }
+  ],
+  "missing": [
+    "no call durations for postgres around the symptoms",
+    "no call durations for redis around the symptoms",
+    "no shop_dependency_errors_total series in the last 1h: the counter appears only after a first error, so zero errors and missing instrumentation look the same"
+  ],
+  "checks": [
+    {
+      "id": "C1",
+      "hypothesis_id": "H1",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"redis\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "failed",
+      "detail": "the redis container was running around the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C2",
+      "hypothesis_id": "H1",
+      "name": "dependency_errors",
+      "description": "The application counts errors talking to the dependency",
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"redis\"}[285s]))",
+      "expected_if_true": "errors to the dependency rise in the incident window",
+      "result": "no_data",
+      "detail": "no shop_dependency_errors_total series in the last 1h: the counter appears only after a first error, so zero errors and missing instrumentation look the same",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C3",
+      "hypothesis_id": "H1",
+      "name": "dependency_error_logs",
+      "description": "Application logs report errors talking to the dependency",
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\" [285s]))",
+      "expected_if_true": "dependency error lines appear in the incident window",
+      "result": "failed",
+      "detail": "application logs have no dependency errors for redis",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C4",
+      "hypothesis_id": "H2",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"postgres\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "failed",
+      "detail": "the postgres container was running around the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C5",
+      "hypothesis_id": "H2",
+      "name": "dependency_errors",
+      "description": "The application counts errors talking to the dependency",
+      "query": "sum(increase(shop_dependency_errors_total{dependency=\"postgres\"}[285s]))",
+      "expected_if_true": "errors to the dependency rise in the incident window",
+      "result": "no_data",
+      "detail": "no shop_dependency_errors_total series in the last 1h: the counter appears only after a first error, so zero errors and missing instrumentation look the same",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C6",
+      "hypothesis_id": "H2",
+      "name": "dependency_error_logs",
+      "description": "Application logs report errors talking to the dependency",
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"postgres\" [285s]))",
+      "expected_if_true": "dependency error lines appear in the incident window",
+      "result": "failed",
+      "detail": "application logs have no dependency errors for postgres",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C7",
+      "hypothesis_id": "H3",
+      "name": "dependency_latency",
+      "description": "Calls to the dependency take much longer than usual",
+      "query": "histogram_quantile(0.95, sum by (le) (rate(shop_dependency_duration_seconds_bucket{dependency=\"redis\"}[285s])))",
+      "expected_if_true": "call p95 is at least 3x its usual value (median per-minute p95 over the 30 min before)",
+      "result": "no_data",
+      "detail": "no call durations for redis around the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C8",
+      "hypothesis_id": "H4",
+      "name": "dependency_latency",
+      "description": "Calls to the dependency take much longer than usual",
+      "query": "histogram_quantile(0.95, sum by (le) (rate(shop_dependency_duration_seconds_bucket{dependency=\"postgres\"}[285s])))",
+      "expected_if_true": "call p95 is at least 3x its usual value (median per-minute p95 over the 30 min before)",
+      "result": "no_data",
+      "detail": "no call durations for postgres around the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C9",
+      "hypothesis_id": "H5",
+      "name": "target_down",
+      "description": "Prometheus cannot scrape the application",
+      "query": "min(avg_over_time(up{job=\"shop\"}[285s]))",
+      "expected_if_true": "the scrape target is down for a meaningful part of the symptoms",
+      "result": "failed",
+      "detail": "Prometheus could not scrape app for only about 10 s around the symptoms, too short to explain the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C10",
+      "hypothesis_id": "H5",
+      "name": "container_not_running",
+      "description": "The container is not running",
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"app\"})",
+      "expected_if_true": "cAdvisor stops seeing the container during the incident window",
+      "result": "failed",
+      "detail": "the app container was running around the symptoms",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C11",
+      "hypothesis_id": "H5",
+      "name": "container_restarted",
+      "description": "The application container restarted",
+      "query": "max(container_start_time_seconds{container_label_com_docker_compose_service=\"app\"})",
+      "expected_if_true": "the container restarts around the symptoms without a release",
+      "result": "failed",
+      "detail": "the app container restarted only to ship releases (1.1.0+20261026T1607, 1.0.0+20261026T1607)",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C12",
+      "hypothesis_id": "H6",
+      "name": "change_markers",
+      "description": "A deploy or configuration change happened shortly before the incident",
+      "query": "shop_build_info",
+      "expected_if_true": "a change marker for the component precedes the symptoms",
+      "result": "held",
+      "detail": "version 1.1.0+20261026T1607 of app was released at 16:10:12",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    },
+    {
+      "id": "C13",
+      "hypothesis_id": "H6",
+      "name": "release_effect_immediate",
+      "description": "The symptoms start right after the release",
+      "query": "shop_build_info",
+      "expected_if_true": "the symptoms begin within 60 s of the release",
+      "result": "held",
+      "detail": "the symptoms began 0 s after version 1.1.0+20261026T1607 of app was released",
+      "ran_at": "2026-10-26T16:15:07.173554+00:00"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "check_id": "C1",
+      "observation_ids": [
+        "O1"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E2",
+      "check_id": "C3",
+      "observation_ids": [
+        "O2"
+      ],
+      "relation": "contradicts",
+      "link_type": "correlation",
+      "strength": 0.5
+    },
+    {
+      "id": "E3",
+      "check_id": "C4",
+      "observation_ids": [
+        "O3"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E4",
+      "check_id": "C6",
+      "observation_ids": [
+        "O4"
+      ],
+      "relation": "contradicts",
+      "link_type": "correlation",
+      "strength": 0.5
+    },
+    {
+      "id": "E5",
+      "check_id": "C9",
+      "observation_ids": [
+        "O5"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E6",
+      "check_id": "C10",
+      "observation_ids": [
+        "O6"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 1.0
+    },
+    {
+      "id": "E7",
+      "check_id": "C11",
+      "observation_ids": [
+        "O7",
+        "O8"
+      ],
+      "relation": "contradicts",
+      "link_type": "temporal",
+      "strength": 0.5
+    },
+    {
+      "id": "E8",
+      "check_id": "C12",
+      "observation_ids": [
+        "O9"
+      ],
+      "relation": "supports",
+      "link_type": "temporal",
+      "strength": 0.5
+    },
+    {
+      "id": "E9",
+      "check_id": "C13",
+      "observation_ids": [
+        "O10"
+      ],
+      "relation": "supports",
+      "link_type": "temporal",
+      "strength": 0.5
+    }
+  ],
+  "observations": [
+    {
+      "id": "O1",
+      "source": "prometheus",
+      "component": "redis",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "container_seen",
+      "payload": {
+        "max_unseen_seconds": 6.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"redis\"})"
+    },
+    {
+      "id": "O2",
+      "source": "loki",
+      "component": "redis",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "log_count",
+      "payload": {
+        "count": 0
+      },
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"redis\" [285s]))"
+    },
+    {
+      "id": "O3",
+      "source": "prometheus",
+      "component": "postgres",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "container_seen",
+      "payload": {
+        "max_unseen_seconds": 6.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"postgres\"})"
+    },
+    {
+      "id": "O4",
+      "source": "loki",
+      "component": "postgres",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "log_count",
+      "payload": {
+        "count": 0
+      },
+      "query": "sum(count_over_time({service=\"app\"} | json | msg=\"dependency_error\" | dependency=\"postgres\" [285s]))"
+    },
+    {
+      "id": "O5",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "scrape_up_fraction",
+      "payload": {
+        "up_fraction": 0.965,
+        "down_seconds": 10,
+        "focus_seconds": 285
+      },
+      "query": "min(avg_over_time(up{job=\"shop\"}[285s]))"
+    },
+    {
+      "id": "O6",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "container_seen",
+      "payload": {
+        "max_unseen_seconds": 6.0
+      },
+      "query": "time() - max(container_last_seen{container_label_com_docker_compose_service=\"app\"})"
+    },
+    {
+      "id": "O7",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "container_starts",
+      "payload": {
+        "starts": [
+          "2026-10-26T16:09:57+00:00",
+          "2026-10-26T16:13:02+00:00"
+        ],
+        "releases": {
+          "2026-10-26T16:09:57+00:00": "1.1.0+20261026T1607",
+          "2026-10-26T16:13:02+00:00": "1.0.0+20261026T1607"
+        }
+      },
+      "query": "max(container_start_time_seconds{container_label_com_docker_compose_service=\"app\"})"
+    },
+    {
+      "id": "O8",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:13:57+00:00",
+      "kind": "releases",
+      "payload": {
+        "versions": [
+          "1.1.0+20261026T1607",
+          "1.0.0+20261026T1607"
+        ]
+      },
+      "query": "shop_build_info"
+    },
+    {
+      "id": "O9",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:10:12+00:00",
+      "kind": "release",
+      "payload": {
+        "version": "1.1.0+20261026T1607",
+        "started": "2026-10-26T16:10:12+00:00",
+        "previous": [
+          "1.0.0+20261026T1551",
+          "1.0.0+20261026T1559",
+          "1.1.0+20261026T1559"
+        ]
+      },
+      "query": "shop_build_info"
+    },
+    {
+      "id": "O10",
+      "source": "prometheus",
+      "component": "app",
+      "ts": "2026-10-26T16:10:12+00:00",
+      "kind": "release_gap",
+      "payload": {
+        "version": "1.1.0+20261026T1607",
+        "released": "2026-10-26T16:10:12+00:00",
+        "symptoms_start": "2026-10-26T16:10:12+00:00",
+        "gap_seconds": 0
+      },
+      "query": "shop_build_info"
+    }
+  ]
+}

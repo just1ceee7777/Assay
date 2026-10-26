@@ -47,6 +47,8 @@ class Profile:
     dependency_label: str = "dependency"
     app_logs: str = '{service="app"}'
     container_label: str = "container_label_com_docker_compose_service"
+    # Histogram of call durations per dependency (failed calls included).
+    dependency_latency_metric: str = "shop_dependency_duration_seconds"
     # A gauge labelled with the running version, e.g. shop_build_info{version="1.2.3"} 1.
     build_info_metric: str = "shop_build_info"
     version_label: str = "version"
@@ -215,6 +217,73 @@ def dependency_error_logs(ctx: Context, dep: str) -> Outcome:
         f"application logs have {int(count)} dependency error lines for {dep}",
         query,
         findings,
+    )
+
+
+# Normal behaviour: the median of the per-minute p95 over the half hour before the focus
+# period. A median ignores a few bad minutes in that half hour (an earlier incident, a load
+# test); an average over the same window would not.
+LATENCY_BASELINE = timedelta(minutes=30)
+# With fewer per-minute values than this (a new metric, a restarted app), there is no
+# trustworthy "normal" to compare with.
+BASELINE_MIN_POINTS = 15
+SLOWDOWN_FACTOR = 3.0
+# Below this, a "3x slower" dependency is noise (0.5 ms -> 1.5 ms means nothing to a page).
+SLOWDOWN_MIN_DELTA_SECONDS = 0.02
+
+
+def dependency_latency(ctx: Context, dep: str) -> Outcome:
+    """Each call to the dependency takes much longer than it normally does."""
+    p = ctx.profile
+    selector = f'{p.dependency_latency_metric}_bucket{{{p.dependency_label}="{dep}"}}'
+
+    def p95(window: str) -> str:
+        return f"histogram_quantile(0.95, sum by (le) (rate({selector}[{window}])))"
+
+    minutes = int(LATENCY_BASELINE.total_seconds() // 60)
+    per_minute = f"({p95('1m')})[{minutes}m:1m]"
+    query = p95(ctx.focus_range)
+    baseline_query = f"quantile_over_time(0.5, {per_minute})"
+    now = _value(ctx.metrics.query(query, ctx.focus_end))
+    if now is None or now != now:  # NaN: no calls
+        return Outcome(
+            CheckResult.NO_DATA, f"no call durations for {dep} around the symptoms", query
+        )
+    points = _value(ctx.metrics.query(f"count_over_time({per_minute})", ctx.focus_start)) or 0
+    before = _value(ctx.metrics.query(baseline_query, ctx.focus_start))
+    if before is None or before != before or points < BASELINE_MIN_POINTS:
+        return Outcome(
+            CheckResult.NO_DATA,
+            f"not enough history of call durations for {dep} to know what is normal "
+            f"({int(points)} of {BASELINE_MIN_POINTS} minutes needed)",
+            baseline_query,
+        )
+    baseline_window = f"median of per-minute p95 over {minutes} min"
+    payload = {
+        "p95_ms": round(now * 1000, 1),
+        "baseline_p95_ms": round(before * 1000, 1),
+        "baseline_window": baseline_window,
+    }
+    finding = Finding("prometheus", dep, ctx.focus_end, "dependency_latency", payload, query)
+    usual = Finding(
+        "prometheus",
+        dep,
+        ctx.focus_start,
+        "dependency_latency_baseline",
+        {"p95_ms": payload["baseline_p95_ms"], "minutes": int(points)},
+        baseline_query,
+    )
+    slower = now >= SLOWDOWN_FACTOR * before and now - before >= SLOWDOWN_MIN_DELTA_SECONDS
+    numbers = f"p95 {payload['p95_ms']} ms, normally {payload['baseline_p95_ms']} ms"
+    if slower:
+        return Outcome(
+            CheckResult.HELD, f"calls to {dep} got slower ({numbers})", query, [finding, usual]
+        )
+    return Outcome(
+        CheckResult.FAILED,
+        f"calls to {dep} were about as fast as usual ({numbers})",
+        query,
+        [finding, usual],
     )
 
 
@@ -496,6 +565,15 @@ CONTAINER_NOT_RUNNING = CheckSpec(
     1.0,
     container_not_running,
 )
+DEPENDENCY_LATENCY = CheckSpec(
+    "dependency_latency",
+    "Calls to the dependency take much longer than usual",
+    f"call p95 is at least {SLOWDOWN_FACTOR:g}x its usual value (median per-minute p95 "
+    f"over the {int(LATENCY_BASELINE.total_seconds() // 60)} min before)",
+    LinkType.CORRELATION,
+    1.0,
+    dependency_latency,
+)
 TARGET_DOWN = CheckSpec(
     "target_down",
     "Prometheus cannot scrape the application",
@@ -540,6 +618,7 @@ class Cause:
 DEPENDENCY_UNAVAILABLE = Cause(
     "dependency_unavailable", (CONTAINER_NOT_RUNNING, DEPENDENCY_ERRORS, DEPENDENCY_ERROR_LOGS)
 )
+DEPENDENCY_SLOW = Cause("dependency_slow", (DEPENDENCY_LATENCY,))
 APP_UNAVAILABLE = Cause(
     "app_unavailable", (TARGET_DOWN, CONTAINER_NOT_RUNNING, CONTAINER_RESTARTED)
 )
@@ -549,6 +628,7 @@ RECENT_CHANGE = Cause("recent_change", (CHANGE_MARKERS, RELEASE_EFFECT_IMMEDIATE
 def candidates(profile: Profile) -> list[tuple[Cause, str]]:
     """Every (cause, component) pair worth checking. The order is only for stable ids."""
     pairs: list[tuple[Cause, str]] = [(DEPENDENCY_UNAVAILABLE, dep) for dep in profile.dependencies]
+    pairs += [(DEPENDENCY_SLOW, dep) for dep in profile.dependencies]
     pairs.append((APP_UNAVAILABLE, profile.app))
     pairs.append((RECENT_CHANGE, profile.app))
     return pairs

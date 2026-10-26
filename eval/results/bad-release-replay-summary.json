@@ -1,0 +1,11 @@
+{
+  "runs": 10,
+  "top1": 1.0,
+  "top3": 1.0,
+  "claims_with_evidence": 1.0,
+  "valid_reports": 10,
+  "alert_in_run": 10,
+  "distractor_won": 0,
+  "distractor_supported": 0,
+  "mean_investigation_seconds": 0.17
+}
