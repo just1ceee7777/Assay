@@ -1,0 +1,35 @@
+# Scenario: a release ships an N+1 query and item pages get slow.
+# The ground truth below is read only by the lab and the evaluation code,
+# never by Assay itself.
+
+id: bad-release
+title: A release makes item pages ten times slower
+description: >
+  Version 1.1.0 loads the related items of a page with one query per item instead of
+  one query for all of them. Every page now makes 21 round trips to PostgreSQL instead
+  of 2. Nothing fails; pages just get slow. The fix is a rollback to 1.0.0.
+
+alert: ShopSlowItemPages
+warmup_seconds: 120
+fault:
+  action: deploy_service
+  service: app
+  version: 1.1.0
+  env:
+    RELATED_ITEMS_QUERY: per_item
+duration_seconds: 180
+recovery:
+  action: deploy_service
+  service: app
+  version: 1.0.0
+  env:
+    RELATED_ITEMS_QUERY: batch
+cooldown_seconds: 120
+
+ground_truth:
+  root_cause_type: recent_change
+  component: app
+  expected_symptoms:
+    - item page p95 latency rises from ~10 ms to ~100 ms
+    - no HTTP errors
+  fix: roll back to 1.0.0

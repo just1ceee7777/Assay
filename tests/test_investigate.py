@@ -9,8 +9,10 @@ from assay.checks import (
     Profile,
     change_markers,
     container_not_running,
+    container_restarted,
     dependency_errors,
     release_effect_immediate,
+    target_down,
 )
 from assay.domain import CheckResult, HypothesisStatus, Incident, Relation, Trigger
 from assay.investigate import investigate
@@ -77,8 +79,7 @@ def redis_down_lab() -> tuple[FakeMetrics, FakeLogs]:
         "count(last_over_time(shop_dependency_errors_total": 1,
         'dependency="redis"': 3000,
         'dependency="postgres"': None,  # series never created: no errors counted
-        "min_over_time(up": 1,
-        "changes(": 0,
+        "avg_over_time(up": 1,
     }
     outage = (START + timedelta(minutes=2), START + timedelta(minutes=5))
     m.ranges = {
@@ -246,3 +247,57 @@ def test_focus_is_symptoms_plus_lead() -> None:
     assert ctx.focus_end == END - timedelta(minutes=1)
     assert ctx.focus_range == "180s"  # from minute 2 (3 min - 60 s lead) to minute 5
     assert Context(metrics, logs, Profile(), START, END).focus_start == START
+
+
+def _focus_ctx(metrics: FakeMetrics, logs: FakeLogs) -> Context:
+    # Symptoms from minute 2 to the end: focus is minute 1 to minute 6 (300 s).
+    return Context(metrics, logs, Profile(), START, END, START + timedelta(minutes=2), END)
+
+
+def test_short_scrape_gap_is_too_short_to_explain_symptoms() -> None:
+    metrics, logs = redis_down_lab()
+    metrics.instant["avg_over_time(up"] = 1 - 5 / 300  # down for one 5 s scrape
+    outcome = target_down(_focus_ctx(metrics, logs), "app")
+    assert outcome.result is CheckResult.FAILED
+    assert "only about 5 s" in outcome.detail
+
+
+def test_long_scrape_gap_holds() -> None:
+    metrics, logs = redis_down_lab()
+    metrics.instant["avg_over_time(up"] = 0.5
+    outcome = target_down(_focus_ctx(metrics, logs), "app")
+    assert outcome.result is CheckResult.HELD
+    assert outcome.findings[0].payload["down_seconds"] == 150
+
+
+def _starts(*moments: datetime) -> list[Series]:
+    points, value = [], (START - timedelta(hours=1)).timestamp()
+    for ts in _grid():
+        for m in moments:
+            if ts >= m:
+                value = m.timestamp()
+        points.append((ts, value))
+    return [Series({}, points)]
+
+
+def test_restart_for_a_release_is_not_a_crash() -> None:
+    metrics, logs = redis_down_lab()
+    restart = START + timedelta(minutes=3)
+    metrics.ranges = {"container_start_time_seconds": _starts(restart), **metrics.ranges}
+    metrics.ranges["shop_build_info"] = _build_info(
+        ("1.0.0", START - RELEASE_LOOKBEHIND, restart),
+        ("1.1.0", restart + timedelta(seconds=15), END),
+    )
+    outcome = container_restarted(_focus_ctx(metrics, logs), "app")
+    assert outcome.result is CheckResult.FAILED
+    assert "only to ship releases (1.1.0)" in outcome.detail
+
+
+def test_restart_without_release_holds() -> None:
+    metrics, logs = redis_down_lab()
+    crash = START + timedelta(minutes=3)
+    metrics.ranges = {"container_start_time_seconds": _starts(crash), **metrics.ranges}
+    metrics.ranges["shop_build_info"] = _build_info(("1.0.0", START - RELEASE_LOOKBEHIND, END))
+    outcome = container_restarted(_focus_ctx(metrics, logs), "app")
+    assert outcome.result is CheckResult.HELD
+    assert "1 time(s) without a release" in outcome.detail

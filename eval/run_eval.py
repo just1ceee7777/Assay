@@ -113,6 +113,8 @@ def investigate_run(
 ) -> dict[str, Any]:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     report_dir = out_dir / record_path.stem
+    # Older run records predate the per-scenario alert.
+    alert = record.get("alert", alert)
     cmd = ["uv", "run", "assay", "investigate", "--alert", alert, "--lookback", "15m"]
     if until:
         cmd += ["--until", until.isoformat()]
